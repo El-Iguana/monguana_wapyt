@@ -1343,7 +1343,8 @@ class Monguana(MainWindow):
         self.tabs.set_active(tid)
         _spawn(self._run(tid), "first query")
         _spawn(self._load_head_stats(tid), "head stats")
-        _spawn(self._attach_editor(tid, "filter"), "filter editor")
+        _spawn(self._attach_view_editors(tid), "query editors")
+        _spawn(self._sample_fields(tid), "field sample")
         return tid
 
     def _view_html(self, tid: str, conn_name: str, db: str, coll: str, kind: str) -> str:
@@ -1516,7 +1517,7 @@ class Monguana(MainWindow):
                 or (which == "aggregate" and mode == "aggregate")
             )
         self._set_hidden(f"{tid}-filter", mode == "aggregate")
-        _el(f"{tid}-pipeline").hidden = mode != "aggregate"
+        self._set_hidden(f"{tid}-pipeline", mode != "aggregate")
         run = root.querySelector('[data-mg="run"] span:not(.mdi)')
         run.textContent = {
             "find": "Run", "aggregate": "Run",
@@ -1533,15 +1534,19 @@ class Monguana(MainWindow):
         if not template or not field:
             return
         current = str(field.value).strip()
+        stage = template.replace(chr(10), chr(10) + "  ")
         if not current:
-            field.value = f"[\n  {template.replace(chr(10), chr(10) + '  ')}\n]"
+            text = f"[\n  {stage}\n]"
         elif current.endswith("]"):
             body = current[:-1].rstrip()
             separator = "" if body.endswith("[") else ","
-            field.value = f"{body}{separator}\n  {template.replace(chr(10), chr(10) + '  ')}\n]"
+            text = f"{body}{separator}\n  {stage}\n]"
         else:
-            field.value = f"{current},\n{template}"
-        field.focus()
+            text = f"{current},\n{template}"
+        # The caret lands inside the new stage's innermost braces, ready to type.
+        caret = len(text.rstrip("]\n").rstrip("}"))
+        self._set_text(f"{tid}-pipeline", text, caret)
+        self._focus_field(f"{tid}-pipeline")
 
     def _query(self, tid: str) -> dict:
         def value(suffix: str) -> str:
@@ -1676,25 +1681,28 @@ class Monguana(MainWindow):
             return False
         return True
 
-    async def _attach_editor(self, tid: str, role: str, *, multiline: bool = False,
-                             max_height: str = "9em") -> None:
-        """
-        Put a CodeMirror editor over one of the view's text boxes.
+    # Which query boxes get an editor, and how each behaves. One-line boxes
+    # run on Enter; multi-line ones indent with Tab and run on Ctrl+Enter.
+    _QUERY_EDITORS = (
+        ("filter", False, "9em"),
+        ("sort", False, "5em"),
+        ("projection", False, "5em"),
+        ("update", True, "10em"),
+        ("pipeline", True, "22em"),
+    )
 
-        The <textarea> stays in the DOM, hidden, as the source of truth: every
-        change is copied into it, so the code that reads query boxes needs no
-        editor awareness. Writes go through ``_set_text`` instead, which
-        updates both.
+    def _mount_editor(self, area, *, role: str, multiline: bool, on_run=None,
+                      on_save=None, max_height: str | None = None,
+                      height: str | None = None, fill: bool = False,
+                      fields=None) -> dict:
         """
-        element_id = f"{tid}-{role}"
-        if element_id in self._editors or not await self._ensure_editor():
-            return
-        area = _el(element_id)
-        if not area or tid not in self._views:
-            return
-
+        Put a CodeMirror editor in place of a <textarea>/<input>, which stays
+        in the DOM, hidden, as the source of truth: every edit is copied into
+        it, so code that reads a box needs no editor awareness. Writes go
+        through ``_set_text``. The caller must have awaited ``_ensure_editor``.
+        """
         host = js.document.createElement("div")
-        host.className = "mg-cm mg-grow"
+        host.className = "mg-cm " + ("mg-cm-fill" if fill else "mg-grow")
         host.dataset.role = f"{role}-editor"
         area.parentNode.insertBefore(host, area)
         hidden_before = bool(area.hidden)
@@ -1702,41 +1710,83 @@ class Monguana(MainWindow):
         def _on_change(text) -> None:
             area.value = str(text)
 
-        def _on_run(*_args) -> None:
+        def _call(handler):
+            return lambda *_args: handler() if handler else None
+
+        proxies = [create_proxy(_on_change), create_proxy(_call(on_run)),
+                   create_proxy(_call(on_save))]
+        options = {
+            "value": str(area.value),
+            "placeholder": str(area.placeholder or ""),
+            "multiline": multiline,
+            "label": str(area.getAttribute("aria-label") or role),
+            "onChange": proxies[0],
+            "onRun": proxies[1],
+            "onSave": proxies[2],
+        }
+        if max_height:
+            options["maxHeight"] = max_height
+        if height:
+            options["height"] = height
+        if fields is not None:
+            options["fields"] = fields
+        editor = js.window.MgEditor.create(host, to_js(options, dict_converter=js.Object.fromEntries))
+        area.hidden = True
+        host.hidden = hidden_before
+        return {"editor": editor, "host": host, "proxies": proxies}
+
+    async def _attach_editor(self, tid: str, role: str, *, multiline: bool = False,
+                             max_height: str = "9em") -> None:
+        """An editor over one of a view's query boxes (see ``_mount_editor``)."""
+        element_id = f"{tid}-{role}"
+        if element_id in self._editors or not await self._ensure_editor():
+            return
+        area = _el(element_id)
+        if not area or tid not in self._views:
+            return
+
+        def _run() -> None:
             view = self._views.get(tid)
             if view is not None:
                 view["page"] = 1
                 _spawn(self._run(tid), "run")
 
-        proxies = [create_proxy(_on_change), create_proxy(_on_run)]
-        options = to_js(
-            {
-                "value": str(area.value),
-                "placeholder": str(area.placeholder or ""),
-                "multiline": multiline,
-                "maxHeight": max_height,
-                "label": str(area.getAttribute("aria-label") or role),
-                "onChange": proxies[0],
-                "onRun": proxies[1],
-            },
-            dict_converter=js.Object.fromEntries,
+        self._editors[element_id] = self._mount_editor(
+            area, role=role, multiline=multiline, on_run=_run, max_height=max_height,
+            fields=self._field_list(tid),
         )
-        editor = js.window.MgEditor.create(host, options)
-        self._editors[element_id] = {"editor": editor, "host": host, "proxies": proxies}
-        area.hidden = True
-        host.hidden = hidden_before
+
+    async def _attach_view_editors(self, tid: str) -> None:
+        for role, multiline, max_height in self._QUERY_EDITORS:
+            await self._attach_editor(tid, role, multiline=multiline, max_height=max_height)
+
+    async def _sample_fields(self, tid: str) -> None:
+        """
+        Sample the collection's fields in the background when a view opens,
+        so completions offer field paths from the first keystroke rather than
+        only after Fields has been opened. Quiet: a failure just means no
+        field completions.
+        """
         view = self._views.get(tid)
-        if view and view.get("schema"):
+        if view is None or view.get("schema"):
+            return
+        result = await MongoService().schema_async(view["conn"], view["db"], view["coll"])
+        if result.get("ok") and tid in self._views and not self._views[tid].get("schema"):
+            self._views[tid]["schema"] = result
             self._editor_fields(tid)
 
-    def _editor_fields(self, tid: str) -> None:
-        """Offer the sampled field paths as completions in this view's editors."""
+    def _field_list(self, tid: str):
+        """The view's sampled field paths as the editor's JS completion list."""
         schema = (self._views.get(tid) or {}).get("schema") or {}
-        fields = to_js(
+        return to_js(
             [{"path": row["path"], "types": " | ".join(row["types"])}
              for row in schema.get("fields", [])],
             dict_converter=js.Object.fromEntries,
         )
+
+    def _editor_fields(self, tid: str) -> None:
+        """Offer the sampled field paths as completions in this view's editors."""
+        fields = self._field_list(tid)
         for element_id, entry in self._editors.items():
             if element_id.startswith(f"{tid}-"):
                 entry["editor"].setFields(fields)
@@ -2185,8 +2235,17 @@ class Monguana(MainWindow):
         error = modal.body.querySelector(".mg-editor-error")
         save_button = modal.body.querySelector('[data-editor="save"]')
         area.value = text
+        mounted: dict = {}
+
+        def _close() -> None:
+            if mounted:
+                mounted["editor"].destroy()
+                mounted.clear()
+            modal.close()
 
         async def _save() -> None:
+            if save_button.disabled:
+                return
             save_button.disabled = True
             try:
                 result = await save(str(area.value))
@@ -2196,7 +2255,7 @@ class Monguana(MainWindow):
                 error.hidden = False
                 error.textContent = result.get("error", "Could not save")
                 return
-            modal.close()
+            _close()
             self._toast(done(result))
             if tid in self._views:
                 await self._run(tid)
@@ -2206,11 +2265,14 @@ class Monguana(MainWindow):
             if not which:
                 return
             if which.dataset.editor == "cancel":
-                modal.close()
+                _close()
             else:
                 _spawn(_save(), "document save")
 
         def _on_key(event) -> None:
+            # The editor handles its own Ctrl+S and prevents the default.
+            if event.defaultPrevented:
+                return
             if str(event.key).lower() == "s" and (event.ctrlKey or event.metaKey):
                 event.preventDefault()
                 _spawn(_save(), "document save")
@@ -2220,10 +2282,23 @@ class Monguana(MainWindow):
             self._proxies.append(proxy)
             modal.body.addEventListener(event_name, proxy)
         modal.show()
-        area.focus()
         # Put the caret inside an empty template, not after it.
-        if text == "{\n  \n}":
-            area.selectionStart = area.selectionEnd = 4
+        caret = 4 if text == "{\n  \n}" else 0
+        if await self._ensure_editor() and area.isConnected:
+            mounted.update(self._mount_editor(
+                area, role="document", multiline=True, fill=True, height="100%",
+                on_save=lambda: _spawn(_save(), "document save"),
+                on_run=lambda: _spawn(_save(), "document save"),
+                fields=self._field_list(tid),
+            ))
+            mounted["editor"].setValue(text, caret)
+            mounted["editor"].focus()
+            modal.body.querySelector(".mg-editor-keys").textContent = (
+                "Ctrl+S or Ctrl+Enter saves · Tab indents · Ctrl+Space completes"
+            )
+        else:
+            area.focus()
+            area.selectionStart = area.selectionEnd = caret
 
     def _document_viewer(self, doc) -> None:
         modal = ModalWindow(ModalConfig(title="Document (read-only)", width=760, height=600))
@@ -2813,6 +2888,8 @@ _CSS = """
 .mg-grow{flex:1 1 auto;min-width:0;}
 .mg-cm{flex:1 1 0;min-width:0;}
 .mg-cm .cm-editor{min-height:31px;}
+.mg-cm-fill{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}
+.mg-cm-fill .cm-editor{flex:1 1 auto;min-height:0;}
 .mg-qbuttons{display:flex;gap:4px;flex:0 0 auto;}
 .mg-input,.mg-select{background:var(--mg-bg);color:var(--mg-text);border:1px solid var(--mg-line-2);
   border-radius:6px;padding:6px 8px;font:12.5px system-ui,sans-serif;box-sizing:border-box;}

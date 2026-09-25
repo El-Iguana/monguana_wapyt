@@ -8,7 +8,7 @@ PRs or other branches). Numbering continues from the original's.
 
 | Original phase | In the rewrite now | Gap |
 |---|---|---|
-| 6: Monaco + autocomplete | CodeMirror in the filter box (phase 31) + the Fields dialog | Editor in the other boxes; field completions before sampling |
+| 6: Monaco + autocomplete | CodeMirror in every query box and the document editor, with field completions (phases 31–32) | — |
 | 10: Visual query builder | Nothing | Missing |
 | 11: Pipeline builder | One text box + stage templates | No per-stage list with move, enable/disable, remove |
 | 24: Column width/order memory | Nothing | wapyt's DataTable cannot resize or reorder columns |
@@ -49,15 +49,23 @@ but asked for alongside phase 31. Edit (in place via `collMod` where MongoDB
 allows it, otherwise a planned rebuild), hide/unhide, sizes, and the full
 set of create options. See CLAUDE.md, *Index CRUD*.
 
-## Phase 32: editor everywhere, plus completions (original phase 6)
+## Phase 32: editor everywhere, plus completions (original phase 6) — done (2026-09-25)
 
-- The editor in the sort, projection, update and pipeline boxes and in the
-  document editor (`_attach_editor(tid, role, multiline=…)` already takes any
-  box; the document editor needs `onSave` wiring).
-- Completions: operators and helpers are in; field paths arrive only after
-  Fields has sampled. Sample in the background when a view opens.
-- Enter-to-run and Ctrl+S keep working.
-- The text boxes remain the fallback if the bundle fails to load.
+- **Every query box is an editor:** filter, sort and projection (one line:
+  Enter runs), update and pipeline (multi-line: Tab indents, Ctrl+Enter
+  runs). The pipeline's stage templates insert into the editor with the caret
+  inside the new stage.
+- **The document editor** (edit, insert, clone, bulk update) is a full-height
+  editor: Ctrl+S or Ctrl+Enter saves.
+- **Field completions from the first keystroke:** a view samples its fields
+  in the background when it opens; the Fields dialog reuses the sample.
+- **Fallback kept:** with the bundle blocked, every box — the document editor
+  included — is the plain text box and works.
+- **Bug found and fixed:** Escape that only closed a completion list also
+  reached wapyt's modal, which closes on any Escape — the document editor
+  vanished with its unsaved edits. The editor now stops that Escape, at the
+  highest precedence (at normal precedence the completion keymap closed the
+  list first and the guard saw nothing to do).
 
 ## Phase 33: visual query builder (original phase 10)
 
@@ -104,5 +112,5 @@ set of create options. See CLAUDE.md, *Index CRUD*.
 
 ## Order
 
-31 is done; 32 next. 33 and 34 can use the editor for their value and stage
-boxes.
+31 and 32 are done; 33 next. 33 and 34 can use `_mount_editor` for their value
+and stage boxes.

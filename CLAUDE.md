@@ -259,7 +259,10 @@ CodeMirror 6, bundled by `tools/codemirror/build.sh` into one classic script
 that sets `window.MgEditor`. Not Monaco: Monaco needs web workers and is
 several MB. The bundle is loaded on demand by `_ensure_editor` (one attempt
 per page, shared by every tab; a failure is remembered and the text boxes
-stay) and mounted by `_attach_editor(tid, role)`.
+stay) and mounted by `_mount_editor(area, …)`: for the query boxes through
+`_attach_editor(tid, role)` (all five, per `_QUERY_EDITORS`, when a view
+opens), and in the document editor directly. A view also samples its fields
+in the background (`_sample_fields`) so completions offer field paths at once.
 
 - **The `<textarea>` stays, hidden, as the source of truth.** The editor's
   `onChange` copies every edit into it, so every reader of a query box is
@@ -271,6 +274,12 @@ stay) and mounted by `_attach_editor(tid, role)`.
   `event.defaultPrevented`, or a run would fire twice.
 - **One-line boxes never take a newline on Enter** while a completion list is
   open — see the 75 ms accept guard in ROADMAP phase 31.
+- **Escape that closes a completion list is stopped** (`Prec.highest`
+  `domEventHandlers` in `entry.js`): wapyt's modal closes on any Escape that
+  reaches `document`, even a prevented one, and took the document editor's
+  unsaved text with it.
+- The document editor's own `keydown` listener skips `defaultPrevented`, or
+  Ctrl+S would save twice.
 - To change the editor: edit `tools/codemirror/entry.js`, run `build.sh`,
   commit the regenerated `monguana-editor.js` and `VERSION` together
   (`tests/test_vendor.py` compares them). `node_modules` is not committed.
@@ -282,14 +291,11 @@ stay) and mounted by `_attach_editor(tid, role)`.
 
 See ROADMAP.md for the plan. In short:
 
-1. **Editor everywhere.** Only the filter box has it so far (phase 31);
-   sort, projection, update, pipeline and the document editor are still
-   textareas. Field completions need a Fields sample first.
-2. **Visual query builder** (field/operator/value rows generating the filter).
-3. **Pipeline stage list** — add/reorder/toggle stages individually. Today:
+1. **Visual query builder** (field/operator/value rows generating the filter).
+2. **Pipeline stage list** — add/reorder/toggle stages individually. Today:
    one textarea plus stage templates.
-4. **Column width/order persistence** per collection.
-5. **Dump/restore progress console.** Restore returns a per-collection summary
+3. **Column width/order persistence** per collection.
+4. **Dump/restore progress console.** Restore returns a per-collection summary
    when done; no live progress.
 
 ## Conventions

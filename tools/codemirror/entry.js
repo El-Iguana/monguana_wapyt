@@ -17,7 +17,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndI
   from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap,
-  completionStatus, acceptCompletion } from "@codemirror/autocomplete";
+  completionStatus, acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
 import { syntaxHighlighting, HighlightStyle, bracketMatching, indentOnInput }
   from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
@@ -200,6 +200,21 @@ function create(host, options = {}) {
     keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap,
       ...(multiline ? [indentWithTab] : [])]),
     EditorView.lineWrapping,
+    // Escape that only closes a completion list must go no further: wapyt's
+    // modal closes on any Escape reaching the document, so the document
+    // editor would otherwise vanish with its unsaved text. Prec.highest, or
+    // completionKeymap closes the list first and this sees nothing to do.
+    Prec.highest(EditorView.domEventHandlers({
+      keydown: (event, view) => {
+        if (event.key === "Escape" && completionStatus(view.state) !== null) {
+          closeCompletion(view);
+          event.preventDefault();
+          event.stopPropagation();
+          return true;
+        }
+        return false;
+      },
+    })),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) call("onChange", update.state.doc.toString());
       if (update.focusChanged && !update.view.hasFocus) call("onBlur");
@@ -223,6 +238,7 @@ function create(host, options = {}) {
     sizing["&"] = { height: options.height };
     sizing[".cm-scroller"] = { overflow: "auto" };
   }
+  if (options.fields) fields = Array.from(options.fields);
   extensions.push(EditorView.theme(sizing));
 
   const view = new EditorView({
