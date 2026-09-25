@@ -30,6 +30,9 @@ its own query, page and view.
 - **Table, JSON and tree views.** The table's columns are the union of every
   document on the page; a header click sorts on the server, not just the page
   on screen. The tree view caps its depth and size and says when it does.
+- **A code editor for the filter** (CodeMirror 6, bundled — no CDN):
+  highlighting, bracket matching, and completions for operators, BSON helpers
+  and sampled field paths.
 - **Filter, sort, projection** in mongo shell syntax: unquoted keys,
   `ObjectId("…")`, `ISODate("…")`, `NumberDecimal("…")`, `UUID("…")`, regex
   literals `/^ab/i`, comments. Extended JSON works too — what the viewer shows
@@ -51,8 +54,12 @@ document is saved, so a field you delete is really deleted.
 `$out` and `$merge` are refused at any depth, including inside `$lookup` and
 `$facet`.
 
-**Indexes.** List, create (compound, unique, sparse, TTL, partial, text,
-2dsphere, hashed) and drop.
+**Indexes.** List with sizes, create (compound, unique, sparse, TTL, partial,
+hidden, text, 2dsphere, hashed, wildcard, collation), edit, hide from the
+query planner, and drop. An edit shows its plan first: TTL, hidden and
+turning unique on are changed in place; anything else rebuilds the index —
+building the new one before dropping the old when it is renamed, and
+restoring the old one if a same-name rebuild fails.
 
 **Export, dump, restore.** Export every match of the current query as JSON or
 CSV. Dump a database or a collection in `mongodump` layout (BSON + index

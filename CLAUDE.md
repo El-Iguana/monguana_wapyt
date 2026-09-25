@@ -41,6 +41,8 @@ appcode/                    # pytincture modules_path
     user_service.py         #   BFF: accounts (from IguanaXterm)
     transfer.py             #   plain routes under /mg: export, dump, restore
   static/                   #   artwork, same-origin
+  vendor/codemirror/        #   the editor bundle (built, committed), served at /vendor
+tools/codemirror/           # its recipe: pinned package.json, entry.js, build.sh
   wapyt-99.99.99-*.whl      #   dev wheel the BROWSER installs (git-ignored)
 tests/                      # unit tests; test_live.py needs a MongoDB
 tests/smoke/                # ui_smoke.py (Playwright) + seed_shop.py
@@ -217,13 +219,72 @@ counts the batch instead.
   rough edges.) wapyt's modal also sets no font, hence the `.wapyt-modal` rule
   in `_CSS`.
 
+### Index CRUD (added 2026-09-25)
+
+The Indexes dialog lists (with sizes), creates, edits, hides/unhides and
+drops. `MongoService.update_index` takes a whole definition, diffs it against
+the live index and picks a strategy; `dry_run=True` returns the plan, which
+the UI shows before **Apply**:
+
+| strategy | when | how |
+|---|---|---|
+| `in-place` | only TTL set/changed, hidden toggled, unique turned **on** | `collMod`; unique is `prepareUnique` then `unique`, and on duplicates (code 359) the preparation is undone and the error names up to 5 colliding `_id`s |
+| `build-then-drop` | anything else, under a **new name** | build new, drop old: never without an index. Falls back to drop-then-build if MongoDB refuses two indexes on the same keys (codes 85/86) |
+| `drop-then-build` | anything else, **same name** (indexes cannot be renamed) | drop, build; if the build fails the old index is recreated from its exact spec |
+
+Rebuild triggers: keys, name, sparse, partial filter, other options, TTL
+removed, unique turned **off** (in place only from MongoDB 7.1; the test
+server is 7.0). `_id_` is refused throughout.
+
+Traps found building it, both pinned by `tests/test_live.py`:
+
+- **A text index comes back as `{_fts: "text", _ftsx: 1}`** plus
+  server-filled `weights`, `default_language`, `language_override`,
+  `textIndexVersion`. `_index_view` turns it back into `{title: "text"}` and
+  drops the defaults, or every edit of a text index is a phantom rebuild.
+- **`list_indexes` returns naive datetimes even from a tz-aware client**, so a
+  partial filter with a date never equalled the one the form sent back.
+  Definitions are compared through canonical Extended JSON (`_same_bson`).
+- The form's text is relaxed Extended JSON (`_shell`), not the table's
+  compact display, which is lossy (bare ISO dates, bare decimals, unquoted
+  `$**`).
+- "Other options" accepts only `INDEX_EXTRA_OPTIONS` (collation, weights,
+  default_language, language_override, wildcardProjection, bits, min, max).
+  A stored collation is shown fully expanded by the server — verbose, exact,
+  and round-trips.
+
+### The code editor (ROADMAP phase 31)
+
+CodeMirror 6, bundled by `tools/codemirror/build.sh` into one classic script
+that sets `window.MgEditor`. Not Monaco: Monaco needs web workers and is
+several MB. The bundle is loaded on demand by `_ensure_editor` (one attempt
+per page, shared by every tab; a failure is remembered and the text boxes
+stay) and mounted by `_attach_editor(tid, role)`.
+
+- **The `<textarea>` stays, hidden, as the source of truth.** The editor's
+  `onChange` copies every edit into it, so every reader of a query box is
+  unchanged. **Writes must go through `_set_text`** (and focus through
+  `_focus_field`, hiding through `_set_hidden`); assigning `.value` directly
+  updates the hidden textarea and leaves the editor showing the old text.
+- **Keys:** the editor's own keymap handles Enter / Ctrl+Enter / Ctrl+S and
+  prevents the default; the page's delegated `keydown` skips
+  `event.defaultPrevented`, or a run would fire twice.
+- **One-line boxes never take a newline on Enter** while a completion list is
+  open — see the 75 ms accept guard in ROADMAP phase 31.
+- To change the editor: edit `tools/codemirror/entry.js`, run `build.sh`,
+  commit the regenerated `monguana-editor.js` and `VERSION` together
+  (`tests/test_vendor.py` compares them). `node_modules` is not committed.
+- The smoke test types into `.cm-content` (Playwright `fill` works on it),
+  records `securitypolicyviolation` events, and repeats a query with the
+  bundle blocked to prove the fallback.
+
 ## Not built yet (the original had these)
 
-In priority order, roughly:
+See ROADMAP.md for the plan. In short:
 
-1. **Monaco editor + IntelliSense.** Would have to be vendored (CSP), several
-   MB, loaded on demand like IguanaXterm's GridStack. Until then: plain
-   textareas with Tab-indent, `Ctrl+S`, and the Fields dialog for paths.
+1. **Editor everywhere.** Only the filter box has it so far (phase 31);
+   sort, projection, update, pipeline and the document editor are still
+   textareas. Field completions need a Fields sample first.
 2. **Visual query builder** (field/operator/value rows generating the filter).
 3. **Pipeline stage list** — add/reorder/toggle stages individually. Today:
    one textarea plus stage templates.

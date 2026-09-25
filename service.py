@@ -186,6 +186,13 @@ def build_app():
         "/static", StaticFiles(directory=str(APPCODE / "static")), name="static"
     )
 
+    # Third-party browser code, vendored because the CSP allows scripts from
+    # 'self' only. The editor bundle is loaded on demand; see ROADMAP phase 31
+    # and tools/codemirror/.
+    application.mount(
+        "/vendor", StaticFiles(directory=str(APPCODE / "vendor")), name="vendor"
+    )
+
     @application.on_event("shutdown")
     async def _close_pool() -> None:
         pool.close_all()

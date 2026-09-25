@@ -235,3 +235,99 @@ def test_restore_archive_modes(env):
         assert dropped["inserted"] == 3
     finally:
         client.drop_database(target)
+
+
+# -- editing indexes ----------------------------------------------------------
+
+def _index(mongo, conn, name):
+    rows = ok(mongo.indexes(conn, DB, "idx"))["indexes"]
+    return next((row for row in rows if row["name"] == name), None)
+
+
+def _edit(mongo, conn, name, row, **changes):
+    """update_index with the row's current definition plus ``changes``."""
+    args = dict(keys=row["keys_text"], new_name="", unique=row["unique"], sparse=row["sparse"],
+                ttl_seconds=row["ttl"] or 0, partial=row["partial_text"],
+                hidden=row["hidden"], options=row["options_text"])
+    args.update(changes)
+    return mongo.update_index(conn, DB, "idx", name, **args)
+
+
+def test_index_edits_in_place(env):
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.insert(conn, DB, "idx", "[{v: 1, w: 1}, {v: 1, w: 2}, {v: 2, w: 3}]"))
+    ok(mongo.create_index(conn, DB, "idx", "{w: 1}", ""))
+
+    row = _index(mongo, conn, "w_1")
+    assert _edit(mongo, conn, "w_1", row, dry_run=True)["strategy"] == "none"
+    plan = ok(_edit(mongo, conn, "w_1", row, ttl_seconds=3600, dry_run=True))
+    assert plan["strategy"] == "in-place" and plan["changes"] == ["TTL 3600s"]
+    assert _index(mongo, conn, "w_1")["ttl"] is None, "a dry run changes nothing"
+
+    ok(_edit(mongo, conn, "w_1", row, ttl_seconds=3600, unique=True))
+    row = _index(mongo, conn, "w_1")
+    assert (row["ttl"], row["unique"]) == (3600, True)
+
+    ok(mongo.set_index_hidden(conn, DB, "idx", "w_1", True))
+    assert _index(mongo, conn, "w_1")["hidden"] is True
+    ok(_edit(mongo, conn, "w_1", _index(mongo, conn, "w_1"), hidden=False))
+    assert _index(mongo, conn, "w_1")["hidden"] is False
+
+
+def test_unique_conversion_with_duplicates_is_rolled_back(env):
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.create_index(conn, DB, "idx", "{v: 1}", ""))
+    result = _edit(mongo, conn, "v_1", _index(mongo, conn, "v_1"), unique=True)
+    assert not result["ok"] and "share a key" in result["error"], result
+    from services.mongo_pool import pool
+
+    raw = next(i for i in pool.client(1, conn)[DB]["idx"].list_indexes() if i["name"] == "v_1")
+    assert not raw.get("unique") and not raw.get("prepareUnique"), raw
+
+
+def test_rebuilds(env):
+    mongo, conn = env["mongo"], env["conn"]
+    # A new name: the new index is built before the old one is dropped.
+    plan = ok(_edit(mongo, conn, "v_1", _index(mongo, conn, "v_1"), new_name="by_v", dry_run=True))
+    assert plan["strategy"] == "build-then-drop"
+    ok(_edit(mongo, conn, "v_1", _index(mongo, conn, "v_1"), new_name="by_v", keys="{v: 1, w: 1}"))
+    assert _index(mongo, conn, "v_1") is None
+    assert _index(mongo, conn, "by_v")["keys"] == {"v": 1, "w": 1}
+
+    # Same name, new keys: drop, then build.
+    result = ok(_edit(mongo, conn, "by_v", _index(mongo, conn, "by_v"), keys="{v: -1}"))
+    assert result["strategy"] == "drop-then-build"
+    assert _index(mongo, conn, "by_v")["keys"] == {"v": -1}
+
+    # A build that fails (duplicate v) puts the old index back.
+    failed = _edit(mongo, conn, "by_v", _index(mongo, conn, "by_v"), keys="{v: 1}", unique=True)
+    assert not failed["ok"] and "was restored" in failed["error"], failed
+    assert _index(mongo, conn, "by_v")["keys"] == {"v": -1}
+
+    # Removing a TTL cannot be done in place.
+    plan = ok(_edit(mongo, conn, "w_1", _index(mongo, conn, "w_1"), ttl_seconds=0, dry_run=True))
+    assert plan["strategy"] == "drop-then-build" and "TTL removed" in plan["changes"]
+
+    assert not mongo.update_index(conn, DB, "idx", "_id_", "{_id: 1}")["ok"]
+    assert not mongo.update_index(conn, DB, "idx", "nope", "{a: 1}")["ok"]
+
+
+def test_unchanged_definitions_are_not_changes(env):
+    """Text indexes and date filters must round-trip through the edit form."""
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.create_index(conn, DB, "idx", "{title: 'text'}", "search"))
+    ok(mongo.create_index(conn, DB, "idx", "{at: 1}", "recent",
+                          partial='{at: {$gt: ISODate("2024-01-01T00:00:00Z")}}',
+                          options='{collation: {locale: "en", strength: 2}}'))
+    search = _index(mongo, conn, "search")
+    assert search["keys"] == {"title": "text"} and search["options_text"] == ""
+    assert _edit(mongo, conn, "search", search, dry_run=True)["strategy"] == "none"
+    recent = _index(mongo, conn, "recent")
+    assert '"$date"' in recent["partial_text"]
+    unchanged = _edit(mongo, conn, "recent", recent, dry_run=True)
+    assert unchanged["strategy"] == "none", (unchanged, recent)
+    plan = ok(_edit(mongo, conn, "recent", recent, hidden=True, dry_run=True))
+    assert plan["strategy"] == "in-place", plan
+
+    refused = mongo.create_index(conn, DB, "idx", "{z: 1}", "", options="{storageEngine: {}}")
+    assert not refused["ok"] and "not supported" in refused["error"]

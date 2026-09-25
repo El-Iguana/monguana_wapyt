@@ -34,3 +34,4 @@ tests/smoke/*.png
 *.swp
 
 # CLAUDE.md is deliberately TRACKED: it records the pytincture/wapyt pitfalls.
+tools/codemirror/node_modules/

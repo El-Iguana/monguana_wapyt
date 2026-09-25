@@ -49,7 +49,15 @@ def main() -> int:
     problems: list[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = browser.new_page(viewport={"width": 1500, "height": 950})
+        context = browser.new_context(viewport={"width": 1500, "height": 950})
+        # Every CSP violation, not just the ones that surface as console
+        # errors: the editor bundle has to live inside pytincture's policy.
+        context.add_init_script(
+            "window.__csp = [];"
+            "document.addEventListener('securitypolicyviolation', e =>"
+            " window.__csp.push(e.violatedDirective + ' ' + e.blockedURI));"
+        )
+        page = context.new_page()
         page.on("pageerror", lambda exc: problems.append(f"pageerror: {exc}"))
         page.on("console", lambda msg: problems.append(f"console.{msg.type}: {msg.text}")
                 if msg.type == "error" else None)
@@ -96,20 +104,45 @@ def main() -> int:
         expect(view.locator(".mg-head-stats")).to_contain_text("137 docs")
         shot(page, "02-collection")
 
-        step("filter with shell syntax: dates and nested fields")
+        step("the filter box is a CodeMirror editor (ROADMAP phase 31)")
         tid = view.get_attribute("data-tab")
-        view.locator(f"#{tid}-filter").fill(
+        filter_box = view.locator("[data-role=filter-editor] .cm-content")
+        expect(filter_box).to_be_visible(timeout=15000)
+        assert not view.locator(f"#{tid}-filter").is_visible(), "the textarea should be hidden"
+        filter_box.click()
+        page.keyboard.type("{status: {$gt")
+        completions = page.locator(".cm-tooltip-autocomplete li")
+        expect(completions.first).to_contain_text("$gt", timeout=5000)
+        # Enter straight away -- inside CodeMirror's 75 ms accept guard, which
+        # once let a newline through -- must neither run the query nor break
+        # the line.
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(600)
+        expect(view.locator(".mg-summary")).to_have_text("1–50 of 137")
+        page.keyboard.type(": ObjectI")
+        expect(completions.first).to_contain_text("ObjectId", timeout=5000)
+        page.keyboard.press("Escape")
+        # Brackets auto-close; the hidden textarea mirrors the whole text.
+        assert "\n" not in view.locator(f"#{tid}-filter").input_value()
+        assert view.locator(f"#{tid}-filter").input_value().startswith("{status: {$gt"), \
+            view.locator(f"#{tid}-filter").input_value()
+        shot(page, "02b-editor")
+
+        def set_filter(text: str) -> None:
+            filter_box.fill(text)
+            filter_box.press("Enter")
+
+        step("filter with shell syntax: dates and nested fields")
+        set_filter(
             '{status: "paid", placed: {$gte: ISODate("2026-03-01")}, "customer.vip": false}'
         )
-        view.locator(f"#{tid}-filter").press("Enter")
         page.wait_for_timeout(1200)
         summary = view.locator(".mg-summary").inner_text()
         print("    filtered:", summary)
         assert "of" in summary and "137" not in summary, summary
 
         step("header click sorts on the server")
-        view.locator(f"#{tid}-filter").fill("")
-        view.locator(f"#{tid}-filter").press("Enter")
+        set_filter("")
         page.wait_for_timeout(800)
         view.locator("th[data-column-id='number']").click()  # asc
         page.wait_for_timeout(800)
@@ -152,7 +185,7 @@ def main() -> int:
 
         step("updateMany shows a preview, then applies")
         view.locator(f"#{tid}-mode").select_option("updateMany")
-        view.locator(f"#{tid}-filter").fill('{status: /^edited-/}')
+        filter_box.fill('{status: /^edited-/}')
         view.locator(f"#{tid}-update").fill('{$set: {status: "paid"}}')
         view.locator("[data-mg=run]").click()
         confirm = page.locator(".wapyt-modal-overlay").last
@@ -201,6 +234,47 @@ def main() -> int:
         indexes = page.locator(".wapyt-modal-overlay").last
         expect(indexes.locator("tr[data-row-id='status_1_placed_-1']")).to_be_visible(timeout=10000)
         shot(page, "10-indexes")
+
+        step("index CRUD: create with options, edit in place, rebuild, hide")
+        create = indexes.locator("[data-slot=form]")
+        create.locator('input[name="keys"]').fill("{number: 1}")
+        create.locator('input[name="options"]').fill("{collation: {locale: 'en', strength: 2}}")
+        create.locator(".wapyt-form-button-primary").click()
+        number_row = indexes.locator("tr[data-row-id='number_1']")
+        expect(number_row).to_contain_text("collation", timeout=10000)
+
+        def edit_index(row_id: str):
+            indexes.locator(f"tr[data-row-id='{row_id}']").dblclick()
+            dialog = page.locator(".wapyt-modal-overlay").last
+            expect(dialog.locator(".wapyt-modal-title")).to_have_text(f"Edit index {row_id}")
+            return dialog
+
+        dialog = edit_index("number_1")
+        # Unchanged: nothing to do.
+        dialog.locator(".wapyt-form-button-primary").click()
+        expect(page.locator("#mg-toast")).to_have_text("Nothing to change.", timeout=10000)
+        dialog.locator('input[name="unique"]').check()
+        dialog.locator(".wapyt-form-button-primary").click()
+        plan = dialog.locator("[data-slot=plan]")
+        expect(plan).to_have_attribute("data-strategy", "in-place", timeout=10000)
+        expect(plan).to_contain_text("unique on")
+        shot(page, "10b-index-plan")
+        plan.locator("[data-plan=apply]").click()
+        expect(number_row).to_contain_text("unique", timeout=10000)
+
+        dialog = edit_index("number_1")
+        dialog.locator('input[name="name"]').fill("by_number")
+        dialog.locator(".wapyt-form-button-primary").click()
+        expect(plan := dialog.locator("[data-slot=plan]")).to_have_attribute(
+            "data-strategy", "build-then-drop", timeout=10000)
+        plan.locator("[data-plan=apply]").click()
+        expect(indexes.locator("tr[data-row-id='by_number']")).to_contain_text("unique", timeout=15000)
+        expect(indexes.locator("tr[data-row-id='number_1']")).to_have_count(0)
+
+        indexes.locator("tr[data-row-id='by_number']").click(button="right")
+        page.locator(".wapyt-datatable-menu:not([hidden]) >> text=Hide / unhide").click()
+        expect(indexes.locator("tr[data-row-id='by_number']")).to_contain_text("hidden", timeout=10000)
+        shot(page, "10c-indexes-edited")
         indexes.locator(".wapyt-modal-close").click()
 
         step("export refuses a broken filter, then exports every match")
@@ -230,7 +304,7 @@ def main() -> int:
         restore.locator('input[name="db"]').fill("shop_copy")
         restore.locator(".wapyt-form-button-primary").click()
         expect(restore.locator(".mg-restore-result")).to_contain_text(
-            "shop_copy.orders: 137 inserted, 1 index(es)", timeout=20000
+            "shop_copy.orders: 137 inserted, 2 index(es)", timeout=20000
         )
         shot(page, "11-restore")
         restore.locator(".wapyt-form-button-ghost").click()
@@ -240,6 +314,27 @@ def main() -> int:
         page.once("dialog", lambda dialog: dialog.accept("shop_copy"))
         menu.locator("text=Drop database…").click()
         expect(copy).to_have_count(0, timeout=10000)
+
+        violations = page.evaluate("window.__csp")
+        problems.extend(f"CSP: {item}" for item in violations)
+
+        step("without the editor bundle, the plain text box still works")
+        fallback = context.new_page()
+        fallback.route("**/vendor/codemirror/**", lambda route: route.abort())
+        fallback.on("pageerror", lambda exc: problems.append(f"fallback pageerror: {exc}"))
+        fallback.goto(APP, wait_until="domcontentloaded", timeout=30000)
+        fallback.wait_for_selector(".mg-toolbar", timeout=180000)
+        fallback.locator(f".wapyt-tree-row:has-text('{PROFILE}')").first.click()
+        fallback.locator(".wapyt-tree-row[data-node-id$=':shop']").first.click()
+        fallback.locator(".wapyt-tree-row[data-node-id$=':shop:orders']").first.dblclick()
+        plain = fallback.locator(".mg-view").last
+        expect(plain.locator(".wapyt-datatable-table tbody tr[data-row-id]")).to_have_count(50, timeout=20000)
+        fallback.wait_for_timeout(1500)
+        assert plain.locator(".cm-editor").count() == 0
+        ftid = plain.get_attribute("data-tab")
+        plain.locator(f"#{ftid}-filter").fill('{status: "new"}')
+        plain.locator(f"#{ftid}-filter").press("Enter")
+        expect(plain.locator(".mg-summary")).not_to_have_text("1–50 of 137", timeout=10000)
 
         browser.close()
 

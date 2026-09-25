@@ -1,0 +1,11 @@
+monguana-editor.js — CodeMirror 6, bundled by tools/codemirror/build.sh
+esbuild 0.28.2
+@codemirror/autocomplete@6.20.3
+@codemirror/commands@6.11.1
+@codemirror/lang-javascript@6.2.5
+@codemirror/language@6.12.4
+@codemirror/state@6.7.6
+@codemirror/view@6.43.13
+@lezer/highlight@1.2.4
+
+sha256 bf23e04016f10b0c26da9e9253c9a5681f2b94488b9442b0cebe2bad0c25a167

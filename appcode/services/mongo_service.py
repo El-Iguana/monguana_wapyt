@@ -261,16 +261,16 @@ class MongoService:
 
             rows = []
             for info in self._collection(conn_id, db, coll).list_indexes():
-                keys = dict(info.get("key", {}))
+                view = _index_view(info)
                 rows.append({
-                    "name": info.get("name", ""),
-                    "keys": mql.to_display(keys),
-                    "unique": bool(info.get("unique")),
-                    "sparse": bool(info.get("sparse")),
-                    "ttl": info.get("expireAfterSeconds"),
-                    "partial": mql.to_display(info["partialFilterExpression"])
-                    if "partialFilterExpression" in info else None,
-                    "hidden": bool(info.get("hidden")),
+                    **view,
+                    "keys": mql.to_display(view["keys"]),
+                    "partial": mql.to_display(view["partial"]) if view["partial"] is not None else None,
+                    "options": mql.to_display(view["options"]),
+                    # The shell-syntax text the edit form starts from.
+                    "keys_text": _shell(view["keys"]),
+                    "partial_text": _shell(view["partial"]) if view["partial"] is not None else "",
+                    "options_text": _shell(view["options"]) if view["options"] else "",
                 })
             return {"indexes": rows}
 
@@ -279,38 +279,118 @@ class MongoService:
     def create_index(
         self, conn_id: int, db: str, coll: str, keys: str, name: str = "",
         unique: bool = False, sparse: bool = False, ttl_seconds: int = 0,
-        partial: str = "",
+        partial: str = "", hidden: bool = False, options: str = "",
     ) -> dict:
         def work() -> dict:
-            from services import mql
-
-            spec = mql.parse_object(keys, "index key")
-            if not spec:
-                raise _Refused('Give at least one key, like {email: 1}')
-            for field, direction in spec.items():
-                if direction not in (1, -1) and direction not in (
-                    "text", "2dsphere", "2d", "hashed", "wildcard"
-                ):
-                    raise _Refused(
-                        f"{field}: use 1, -1, 'text', '2dsphere', '2d' or 'hashed'"
-                    )
-            options: dict = {}
-            if (name or "").strip():
-                options["name"] = name.strip()
-            if unique:
-                options["unique"] = True
-            if sparse:
-                options["sparse"] = True
-            if int(ttl_seconds or 0) > 0:
-                options["expireAfterSeconds"] = int(ttl_seconds)
-            if (partial or "").strip():
-                expression = mql.parse_object(partial, "partial filter")
-                mql.check_query(expression)
-                options["partialFilterExpression"] = expression
-            created = self._collection(conn_id, db, coll).create_index(
-                list(spec.items()), **options
+            key_list, index_options = _index_spec(
+                keys, name, unique, sparse, ttl_seconds, partial, hidden, options
             )
+            created = self._collection(conn_id, db, coll).create_index(key_list, **index_options)
             return {"name": created}
+
+        return self._guard(work)
+
+    def update_index(
+        self, conn_id: int, db: str, coll: str, name: str, keys: str,
+        new_name: str = "", unique: bool = False, sparse: bool = False,
+        ttl_seconds: int = 0, partial: str = "", hidden: bool = False,
+        options: str = "", dry_run: bool = False,
+    ) -> dict:
+        """
+        Change an existing index to match the given definition.
+
+        MongoDB can change three things in place with ``collMod``: the TTL
+        (set or change — not remove), hidden, and non-unique -> unique. Those
+        are done in place, without rebuilding. Anything else — keys, name,
+        sparse, partial filter, collation and other options, removing a TTL,
+        unique -> non-unique (in place only from 7.1) — means a rebuild:
+
+        * under a **new name**: build the new index first, then drop the old,
+          so the collection is never without it;
+        * under the **same name** (MongoDB cannot rename an index): drop, then
+          build. If the build fails, the old index is recreated from its
+          exact spec.
+
+        ``dry_run`` returns the plan without touching anything; the UI shows
+        it for confirmation.
+        """
+        def work() -> dict:
+            if name == "_id_":
+                raise _Refused("The _id index cannot be changed")
+            collection = self._collection(conn_id, db, coll)
+            info = next((item for item in collection.list_indexes() if item.get("name") == name), None)
+            if info is None:
+                raise _Refused(f"Index {name!r} no longer exists")
+            current = _index_view(info)
+
+            final_name = (new_name or "").strip() or name
+            key_list, index_options = _index_spec(
+                keys, final_name, unique, sparse, ttl_seconds, partial, hidden, options
+            )
+            desired = {
+                "keys": dict(key_list),
+                "name": final_name,
+                "unique": bool(unique),
+                "sparse": bool(sparse),
+                "ttl": index_options.get("expireAfterSeconds"),
+                "partial": index_options.get("partialFilterExpression"),
+                "hidden": bool(hidden),
+                "options": {k: v for k, v in index_options.items() if k in INDEX_EXTRA_OPTIONS},
+            }
+
+            rebuild: list[str] = []
+            if list(desired["keys"].items()) != list(current["keys"].items()):
+                rebuild.append("keys")
+            if desired["name"] != current["name"]:
+                rebuild.append(f"name → {final_name}")
+            if desired["sparse"] != current["sparse"]:
+                rebuild.append("sparse on" if desired["sparse"] else "sparse off")
+            if not _same_bson(desired["partial"], current["partial"]):
+                rebuild.append("partial filter")
+            if not _same_bson(desired["options"], current["options"]):
+                rebuild.append("options")
+            if current["ttl"] is not None and desired["ttl"] is None:
+                rebuild.append("TTL removed")
+            if current["unique"] and not desired["unique"]:
+                rebuild.append("unique off")
+
+            in_place: list[tuple[str, dict]] = []
+            if desired["hidden"] != current["hidden"]:
+                in_place.append(("hidden" if desired["hidden"] else "unhidden",
+                                 {"hidden": desired["hidden"]}))
+            if desired["ttl"] is not None and desired["ttl"] != current["ttl"]:
+                in_place.append((f"TTL {desired['ttl']}s", {"expireAfterSeconds": desired["ttl"]}))
+            if desired["unique"] and not current["unique"]:
+                in_place.append(("unique on", {"unique": True}))
+
+            if rebuild:
+                strategy = "build-then-drop" if final_name != name else "drop-then-build"
+                changes = rebuild + [label for label, _ in in_place]
+            elif in_place:
+                strategy, changes = "in-place", [label for label, _ in in_place]
+            else:
+                strategy, changes = "none", []
+
+            if dry_run or strategy == "none":
+                return {"strategy": strategy, "changes": changes, "name": name}
+
+            if strategy == "in-place":
+                for _label, change in in_place:
+                    _coll_mod(collection, name, change)
+                return {"strategy": strategy, "changes": changes, "name": name}
+
+            strategy = _rebuild_index(collection, info, key_list, index_options, strategy)
+            return {"strategy": strategy, "changes": changes, "name": final_name}
+
+        return self._guard(work)
+
+    def set_index_hidden(self, conn_id: int, db: str, coll: str, name: str, hidden: bool) -> dict:
+        """Hide an index from the planner (it is still maintained), or unhide it."""
+        def work() -> dict:
+            if name == "_id_":
+                raise _Refused("The _id index cannot be hidden")
+            _coll_mod(self._collection(conn_id, db, coll), name, {"hidden": bool(hidden)})
+            return {"name": name, "hidden": bool(hidden)}
 
         return self._guard(work)
 
@@ -632,6 +712,195 @@ def _check_collection_name(name: str) -> None:
         raise _Refused("Collection names cannot start with 'system.'")
     if "$" in name or "\x00" in name or len(name.encode()) > 255:
         raise _Refused("Collection names cannot contain $ and max 255 bytes")
+
+
+# Index options accepted through the free-form "Other options" box, beyond the
+# ones with their own fields. Anything else (storageEngine, v, …) is refused.
+INDEX_EXTRA_OPTIONS = (
+    "collation", "weights", "default_language", "language_override",
+    "wildcardProjection", "2dsphereIndexVersion", "bits", "min", "max",
+)
+
+_INDEX_KEY_KINDS = ("text", "2dsphere", "2d", "hashed")
+
+
+def _index_spec(keys, name, unique, sparse, ttl_seconds, partial, hidden, options):
+    """The key list and create_index options for a definition typed in the UI."""
+    from services import mql
+
+    spec = mql.parse_object(keys, "index key")
+    if not spec:
+        raise _Refused("Give at least one key, like {email: 1}")
+    for field, direction in spec.items():
+        if direction not in (1, -1) and direction not in _INDEX_KEY_KINDS:
+            raise _Refused(f"{field}: use 1, -1, 'text', '2dsphere', '2d' or 'hashed'"
+                           " (a wildcard index is {\"$**\": 1})")
+    result: dict = {}
+    if (name or "").strip():
+        result["name"] = name.strip()
+    if unique:
+        result["unique"] = True
+    if sparse:
+        result["sparse"] = True
+    ttl = int(ttl_seconds or 0)
+    if ttl < 0:
+        raise _Refused("TTL seconds cannot be negative")
+    if ttl > 0:
+        result["expireAfterSeconds"] = ttl
+    if (partial or "").strip():
+        expression = mql.parse_object(partial, "partial filter")
+        mql.check_query(expression)
+        result["partialFilterExpression"] = expression
+    if hidden:
+        result["hidden"] = True
+    extra = mql.parse_object(options, "options") if (options or "").strip() else {}
+    unknown = [key for key in extra if key not in INDEX_EXTRA_OPTIONS]
+    if unknown:
+        raise _Refused(f"Option {unknown[0]!r} is not supported here; use one of "
+                       + ", ".join(INDEX_EXTRA_OPTIONS))
+    result.update(extra)
+    return list(spec.items()), result
+
+
+def _index_view(info: dict) -> dict:
+    """
+    An existing index as the edit form shows it — and as ``update_index``
+    compares it. A text index is stored as ``{_fts: "text", _ftsx: 1}`` plus
+    server-filled defaults (language, version, weights of 1); those are turned
+    back into what was typed, or every edit of one would look like a change.
+    """
+    raw_keys = dict(info.get("key", {}))
+    weights = dict(info.get("weights") or {})
+    keys: dict = {}
+    for field, direction in raw_keys.items():
+        if field == "_fts":
+            keys.update({text_field: "text" for text_field in weights})
+        elif field != "_ftsx":
+            keys[field] = direction
+
+    options = {key: info[key] for key in INDEX_EXTRA_OPTIONS if key in info}
+    if "_fts" in raw_keys:
+        if all(value == 1 for value in weights.values()):
+            options.pop("weights", None)
+        if options.get("default_language") == "english":
+            options.pop("default_language")
+        if options.get("language_override") == "language":
+            options.pop("language_override")
+    options.pop("2dsphereIndexVersion", None)  # server-assigned
+    ttl = info.get("expireAfterSeconds")
+    return {
+        "name": info.get("name", ""),
+        "keys": keys,
+        "unique": bool(info.get("unique")),
+        "sparse": bool(info.get("sparse")),
+        "ttl": int(ttl) if ttl is not None else None,
+        "partial": info.get("partialFilterExpression"),
+        "hidden": bool(info.get("hidden")),
+        "options": options,
+    }
+
+
+def _shell(value: Any) -> str:
+    """
+    A BSON value as text the query parser reads back **exactly**: relaxed
+    Extended JSON. Not the table's compact display, which shows a date as a
+    bare ISO string and a decimal as a bare number and would change their
+    types on the way back.
+    """
+    import json
+
+    from services import mql
+
+    return json.dumps(mql.to_display(value), ensure_ascii=False, separators=(", ", ": "))
+
+
+def _same_bson(left: Any, right: Any) -> bool:
+    """
+    Equality through canonical Extended JSON. ``list_indexes`` returns naive
+    datetimes even from a tz-aware client, so a partial filter read back from
+    the edit form (aware) never compared equal and every edit looked like a
+    rebuild. Canonical JSON writes both as the same UTC instant.
+    """
+    from services import mql
+
+    return mql.encode_id(left) == mql.encode_id(right)
+
+
+def _coll_mod(collection, name: str, change: dict) -> None:
+    """
+    One in-place index change. ``unique: True`` is the two-step MongoDB
+    requires (``prepareUnique``, then ``unique``); if existing documents
+    collide, the preparation is undone and the error names some of them.
+    """
+    from pymongo.errors import OperationFailure
+
+    database = collection.database
+    if change.get("unique"):
+        database.command({"collMod": collection.name, "index": {"name": name, "prepareUnique": True}})
+        try:
+            database.command({"collMod": collection.name, "index": {"name": name, "unique": True}})
+        except OperationFailure as exc:
+            database.command({"collMod": collection.name,
+                              "index": {"name": name, "prepareUnique": False}})
+            if exc.code == 359:
+                from services import docfmt, mql
+
+                ids = [item for violation in (exc.details or {}).get("violations", [])
+                       for item in violation.get("ids", [])]
+                sample = ", ".join(docfmt.scalar_text(mql.to_display(item)) for item in ids[:5])
+                raise _Refused(
+                    f"{len(ids)} document(s) share a key, so the index cannot become "
+                    f"unique. First: {sample}" if ids else
+                    "Existing documents share a key, so the index cannot become unique."
+                ) from None
+            raise
+        return
+    database.command({"collMod": collection.name, "index": {"name": name, **change}})
+
+
+def _rebuild_index(collection, info: dict, key_list: list, options: dict, strategy: str) -> str:
+    """
+    Replace an index. Returns the strategy actually used: build-then-drop can
+    fall back to drop-then-build when MongoDB refuses two indexes with the
+    same keys (codes 85/86).
+    """
+    from pymongo.errors import OperationFailure
+
+    old_name = info["name"]
+    if strategy == "build-then-drop":
+        try:
+            collection.create_index(key_list, **options)
+        except OperationFailure as exc:
+            if exc.code not in (85, 86):
+                raise
+            strategy = "drop-then-build"
+        else:
+            collection.drop_index(old_name)
+            return strategy
+
+    # Drop, then build; on failure put the old one back exactly as it was.
+    old_keys = list(dict(info["key"]).items())
+    old_options = {key: value for key, value in info.items() if key not in ("v", "key", "ns")}
+    collection.drop_index(old_name)
+    try:
+        collection.create_index(key_list, **options)
+    except Exception as exc:  # noqa: BLE001 - restore, then report
+        try:
+            collection.create_index(old_keys, **old_options)
+        except Exception as restore_exc:  # noqa: BLE001
+            raise _Refused(
+                f"The new index failed ({_error(exc)}) and the old one could not be "
+                f"restored ({_error(restore_exc)}). Recreate {old_name!r} by hand."
+            ) from None
+        raise _Refused(f"The new index failed, so {old_name!r} was restored: {_error(exc)}") from None
+    return strategy
+
+
+def _error(exc: Exception) -> str:
+    from services.mongo_pool import error_text
+
+    details = getattr(exc, "details", None) or {}
+    return details.get("errmsg") or error_text(exc)
 
 
 def _row(doc: Any) -> dict:

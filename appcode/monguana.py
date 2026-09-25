@@ -26,7 +26,7 @@ import traceback
 from urllib.parse import quote, urlencode
 
 import js
-from pyodide.ffi import create_proxy
+from pyodide.ffi import create_proxy, to_js
 
 from wapyt import (
     CellConfig,
@@ -75,6 +75,12 @@ APP_ENTRYPOINT = "Monguana"
 APP_FAVICON = "static/el_iguana_avatar.webp"
 
 UNGROUPED = ""
+
+# The CodeMirror bundle (ROADMAP phase 31), vendored under appcode/vendor and
+# built by tools/codemirror/build.sh. Loaded the first time a view opens; if it
+# cannot load, the plain text boxes stay and everything still works.
+EDITOR_SRC = "/vendor/codemirror/monguana-editor.js"
+EDITOR_LOAD_SECONDS = 10
 
 PAGE_SIZES = (20, 50, 100, 200, 500)
 
@@ -229,6 +235,9 @@ class Monguana(MainWindow):
         self._tab_counter = 0
         self._me: dict = {}
         self._proxies: list = []
+        # element id of the <textarea> an editor replaces -> {"editor", "host", "proxies"}
+        self._editors: dict[str, dict] = {}
+        self._editor_ready = None                    # future: did the bundle load?
 
         self._build_chrome()
         _spawn(self._load_identity(), "identity load")
@@ -410,6 +419,10 @@ class Monguana(MainWindow):
 
         view_el = target.closest(".mg-view")
         if view_el:
+            # An editor that acted on the key (run, completion, newline) has
+            # already prevented its default; running again here would double it.
+            if event.defaultPrevented:
+                return
             tid = str(view_el.dataset.tab)
             if key == "Enter" and (event.ctrlKey or event.metaKey):
                 event.preventDefault()
@@ -452,9 +465,7 @@ class Monguana(MainWindow):
             _spawn(self._indexes_dialog(view["conn"], view["db"], view["coll"]), "indexes")
         elif active and key == "/":
             event.preventDefault()
-            field = _el(f"{active}-filter")
-            if field:
-                field.focus()
+            self._focus_field(f"{active}-filter")
 
     def _active_view(self) -> str | None:
         active = self.tabs.get_active()
@@ -1041,24 +1052,31 @@ class Monguana(MainWindow):
     # ------------------------------------------------------------------
 
     async def _indexes_dialog(self, conn_id: int, db: str, coll: str) -> None:
-        modal = ModalWindow(ModalConfig(title=f"Indexes — {db}.{coll}", width=820, height=640))
+        modal = ModalWindow(ModalConfig(title=f"Indexes — {db}.{coll}", width=880, height=680))
         modal.body.innerHTML = (
             '<div class="mg-split">'
             '  <div class="mg-split-top" data-slot="table"></div>'
-            '  <div class="mg-split-bottom" data-slot="form"></div>'
+            '  <div class="mg-hint">Double-click an index, or right-click it, to edit, hide or drop it.</div>'
+            '  <div class="mg-split-bottom-auto" data-slot="form"></div>'
             "</div>"
         )
+        indexes: dict[str, dict] = {}
         table = DataTable(
             DataTableConfig(
                 columns=[
-                    ColumnConfig(id="name", header="Name", width=180),
-                    ColumnConfig(id="keys_text", header="Keys"),
-                    ColumnConfig(id="flags", header="Options", width=220),
+                    ColumnConfig(id="name", header="Name", width=170),
+                    ColumnConfig(id="keys_shown", header="Keys"),
+                    ColumnConfig(id="flags", header="Options", width=260),
+                    ColumnConfig(id="size", header="Size", width=80, align="right",
+                                 sort_by="size_bytes"),
                 ],
                 id_field="name",
                 selection="single",
                 empty_text="No indexes",
                 context_actions=[
+                    TableAction("edit", "Edit…", "mdi-pencil"),
+                    TableAction("hide", "Hide / unhide", "mdi-eye-off-outline"),
+                    TableAction(separator=True),
                     TableAction("drop", "Drop index", "mdi-delete", danger=True),
                 ],
             ),
@@ -1071,50 +1089,69 @@ class Monguana(MainWindow):
                 table.set_empty_text(result.get("error", "Could not list indexes"))
                 table.set_rows([])
                 return
+            stats = await MongoService().stats_async(conn_id, db, coll)
+            sizes = stats.get("index_sizes", {}) if stats.get("ok") else {}
+            indexes.clear()
             rows = []
             for index in result["indexes"]:
+                indexes[index["name"]] = index
                 flags = [name for name in ("unique", "sparse", "hidden") if index.get(name)]
                 if index.get("ttl") is not None:
                     flags.append(f"TTL {index['ttl']}s")
                 if index.get("partial"):
                     flags.append("partial " + compact(index["partial"], 60))
+                if index.get("options"):
+                    flags.append(compact(index["options"], 60))
+                size = sizes.get(index["name"])
                 rows.append({
                     "name": index["name"],
-                    "keys_text": compact(index["keys"], 200),
+                    "keys_shown": compact(index["keys"], 200),
                     "flags": ", ".join(flags) or "—",
+                    "size": format_bytes(size) if size is not None else "",
+                    "size_bytes": size or 0,
                 })
             table.set_rows(rows)
 
+        def _edit(name: str) -> None:
+            index = indexes.get(name)
+            if name == "_id_":
+                self._toast("The _id index cannot be changed.")
+            elif index is not None:
+                _spawn(self._index_editor(conn_id, db, coll, index, _refresh), "edit index")
+
         def _on_action(payload: dict) -> None:
             name = str(payload.get("id") or "")
-            if payload.get("action") != "drop" or not name:
+            action = payload.get("action")
+            if action == "edit":
+                _edit(name)
                 return
 
-            async def _drop() -> None:
-                if not js.confirm(f"Drop index {name}?"):
+            async def _run() -> None:
+                service = MongoService()
+                if action == "drop":
+                    if not js.confirm(f"Drop index {name}?"):
+                        return
+                    result = await service.drop_index_async(conn_id, db, coll, name)
+                elif action == "hide":
+                    hidden = not (indexes.get(name) or {}).get("hidden")
+                    result = await service.set_index_hidden_async(conn_id, db, coll, name, hidden)
+                    if result.get("ok"):
+                        self._toast(f"{name} is {'hidden from' if hidden else 'visible to'} the query planner.")
+                else:
                     return
-                result = await MongoService().drop_index_async(conn_id, db, coll, name)
                 if not result.get("ok"):
-                    self._toast(result.get("error", "Could not drop"))
+                    self._toast(result.get("error", "Failed"))
                 await _refresh()
 
-            _spawn(_drop(), "drop index")
+            _spawn(_run(), f"index {action}")
 
         table.on_action(_on_action)
+        table.on_activate(lambda payload: _edit(str(payload.get("id") or "")))
 
         form = Form(
             FormConfig(
                 columns=4, submit_text="Create index",
-                fields=[
-                    FieldConfig(id="keys", label="Keys", required=True, span=2,
-                                placeholder="{email: 1}  or  {title: 'text'}"),
-                    FieldConfig(id="name", label="Name", placeholder="(generated)"),
-                    FieldConfig(id="ttl", label="TTL seconds", type="number", min=0),
-                    FieldConfig(id="partial", label="Partial filter", span=2,
-                                placeholder="{status: 'active'}"),
-                    FieldConfig(id="unique", label="Unique", type="checkbox"),
-                    FieldConfig(id="sparse", label="Sparse", type="checkbox"),
-                ],
+                fields=self._index_fields(),
             ),
             container=modal.body.querySelector("[data-slot=form]"),
         )
@@ -1126,12 +1163,13 @@ class Monguana(MainWindow):
                     conn_id, db, coll, values.get("keys", ""), values.get("name") or "",
                     bool(values.get("unique")), bool(values.get("sparse")),
                     int(values.get("ttl") or 0), values.get("partial") or "",
+                    bool(values.get("hidden")), values.get("options") or "",
                 )
                 if not result.get("ok"):
                     form.set_error(None, result.get("error", "Could not create"))
                     return
-                form.set_values({"keys": "", "name": "", "ttl": "", "partial": "",
-                                 "unique": False, "sparse": False})
+                form.set_values({"keys": "", "name": "", "ttl": "", "partial": "", "options": "",
+                                 "unique": False, "sparse": False, "hidden": False})
                 self._toast(f"Created index {result['name']}.")
                 await _refresh()
             finally:
@@ -1140,6 +1178,141 @@ class Monguana(MainWindow):
         form.on_submit(lambda values: _spawn(_create(values), "create index"))
         modal.show()
         await _refresh()
+
+    @staticmethod
+    def _index_fields(index: dict | None = None) -> list:
+        """The index form, empty for Create or filled from an index for Edit."""
+        index = index or {}
+        return [
+            FieldConfig(id="keys", label="Keys", required=True, span=2,
+                        value=index.get("keys_text", ""),
+                        placeholder="{email: 1}  ·  {title: 'text'}  ·  {\"$**\": 1}"),
+            FieldConfig(id="name", label="Name", value=index.get("name", ""),
+                        placeholder="(generated)"),
+            FieldConfig(id="ttl", label="TTL seconds", type="number", min=0,
+                        value=index.get("ttl") if index.get("ttl") is not None else "",
+                        help="Blank or 0: no expiry."),
+            FieldConfig(id="partial", label="Partial filter", span=2,
+                        value=index.get("partial_text", ""),
+                        placeholder="{status: 'active'}"),
+            FieldConfig(id="options", label="Other options", span=2,
+                        value=index.get("options_text", ""),
+                        placeholder="{collation: {locale: 'en', strength: 2}}",
+                        help="collation, weights, default_language, language_override, "
+                             "wildcardProjection, bits, min, max"),
+            FieldConfig(id="unique", label="Unique", type="checkbox",
+                        value=bool(index.get("unique"))),
+            FieldConfig(id="sparse", label="Sparse", type="checkbox",
+                        value=bool(index.get("sparse"))),
+            FieldConfig(id="hidden", label="Hidden from planner", type="checkbox",
+                        value=bool(index.get("hidden"))),
+        ]
+
+    async def _index_editor(self, conn_id: int, db: str, coll: str, index: dict, refresh) -> None:
+        """
+        Edit one index. The server plans first (``dry_run``) and the plan is
+        shown before anything changes: what differs, and whether it is done in
+        place or needs a rebuild — and if so, whether the collection goes
+        without the index while it builds.
+        """
+        name = index["name"]
+        modal = ModalWindow(ModalConfig(title=f"Edit index {name}", width=760, height=600))
+        modal.body.innerHTML = (
+            '<div class="mg-split">'
+            '  <div data-slot="form"></div>'
+            '  <div class="mg-plan" data-slot="plan" hidden></div>'
+            "</div>"
+        )
+        plan_el = modal.body.querySelector("[data-slot=plan]")
+        form = Form(
+            FormConfig(columns=4, submit_text="Review changes", cancel_text="Cancel",
+                       fields=self._index_fields(index)),
+            container=modal.body.querySelector("[data-slot=form]"),
+        )
+        form.on_cancel(lambda _payload: modal.close())
+        pending: dict = {}
+
+        def _args(values: dict) -> dict:
+            return {
+                "keys": values.get("keys", ""),
+                "new_name": (values.get("name") or "").strip() or name,
+                "unique": bool(values.get("unique")),
+                "sparse": bool(values.get("sparse")),
+                "ttl_seconds": int(values.get("ttl") or 0),
+                "partial": values.get("partial") or "",
+                "hidden": bool(values.get("hidden")),
+                "options": values.get("options") or "",
+            }
+
+        how = {
+            "in-place": ("mdi-check-circle-outline", "In place, without rebuilding the index."),
+            "build-then-drop": ("mdi-swap-horizontal",
+                                "Rebuild: the new index is built first, then the old one is "
+                                "dropped, so queries keep an index throughout. Building "
+                                "takes a while on a large collection."),
+            "drop-then-build": ("mdi-alert-outline",
+                                "Rebuild under the same name: MongoDB cannot rename an index, "
+                                "so the old one is dropped first and the collection has no "
+                                "such index until the new one is built. If the build fails, "
+                                "the old index is restored. Give it a new name to avoid the gap."),
+        }
+
+        async def _review(values: dict) -> None:
+            form.set_busy(True)
+            try:
+                args = _args(values)
+                result = await MongoService().update_index_async(
+                    conn_id, db, coll, name, dry_run=True, **args)
+            finally:
+                form.set_busy(False)
+            if not result.get("ok"):
+                form.set_error(None, result.get("error", "Invalid definition"))
+                return
+            if result["strategy"] == "none":
+                plan_el.hidden = True
+                self._toast("Nothing to change.")
+                return
+            pending.clear()
+            pending.update(args)
+            icon, text = how[result["strategy"]]
+            plan_el.dataset.strategy = result["strategy"]
+            plan_el.innerHTML = (
+                f'<div class="mg-plan-head"><span class="mdi {icon}"></span>'
+                f'<span>Changes: {_esc(", ".join(result["changes"]))}</span></div>'
+                f'<div class="mg-plan-how">{_esc(text)}</div>'
+                '<div class="mg-editor-actions">'
+                '<button type="button" class="mg-btn mg-primary" data-plan="apply">'
+                '<span class="mdi mdi-check"></span><span>Apply</span></button></div>'
+            )
+            plan_el.hidden = False
+
+        async def _apply() -> None:
+            button = plan_el.querySelector("[data-plan=apply]")
+            if button:
+                button.disabled = True
+            result = await MongoService().update_index_async(conn_id, db, coll, name, **pending)
+            if not result.get("ok"):
+                plan_el.hidden = True
+                form.set_error(None, result.get("error", "Could not change the index"))
+                await refresh()
+                return
+            modal.close()
+            done = "rebuilt" if result["strategy"] != "in-place" else "updated"
+            self._toast(f"Index {result['name']} {done}: {', '.join(result['changes'])}.")
+            await refresh()
+
+        def _on_click(event) -> None:
+            if event.target.closest("[data-plan=apply]"):
+                _spawn(_apply(), "apply index change")
+
+        proxy = create_proxy(_on_click)
+        self._proxies.append(proxy)
+        modal.body.addEventListener("click", proxy)
+        # Editing the form again invalidates a plan already on screen.
+        form.on_change(lambda _payload: setattr(plan_el, "hidden", True))
+        form.on_submit(lambda values: _spawn(_review(values), "review index change"))
+        modal.show()
+        form.focus_first()
 
     # ------------------------------------------------------------------
     # Collection views
@@ -1170,6 +1343,7 @@ class Monguana(MainWindow):
         self.tabs.set_active(tid)
         _spawn(self._run(tid), "first query")
         _spawn(self._load_head_stats(tid), "head stats")
+        _spawn(self._attach_editor(tid, "filter"), "filter editor")
         return tid
 
     def _view_html(self, tid: str, conn_name: str, db: str, coll: str, kind: str) -> str:
@@ -1315,6 +1489,12 @@ class Monguana(MainWindow):
         view = self._views.pop(tid, None)
         if view is None:
             return
+        for element_id in [key for key in self._editors if key.startswith(f"{tid}-")]:
+            entry = self._editors.pop(element_id)
+            try:
+                entry["editor"].destroy()
+            except Exception:  # noqa: BLE001 - already gone with its tab
+                pass
         for key in ("table", "tree"):
             widget = view.get(key)
             if widget is not None:
@@ -1335,7 +1515,7 @@ class Monguana(MainWindow):
                 or (which == "update" and is_update)
                 or (which == "aggregate" and mode == "aggregate")
             )
-        _el(f"{tid}-filter").hidden = mode == "aggregate"
+        self._set_hidden(f"{tid}-filter", mode == "aggregate")
         _el(f"{tid}-pipeline").hidden = mode != "aggregate"
         run = root.querySelector('[data-mg="run"] span:not(.mdi)')
         run.textContent = {
@@ -1397,9 +1577,7 @@ class Monguana(MainWindow):
             _spawn(self._fields_dialog(tid), "fields")
         elif action == "reset":
             for suffix in ("filter", "sort", "projection", "update", "pipeline"):
-                element = _el(f"{tid}-{suffix}")
-                if element:
-                    element.value = ""
+                self._set_text(f"{tid}-{suffix}", "")
             view["page"] = 1
             self._status(tid)
             _spawn(self._run(tid), "reset")
@@ -1454,6 +1632,140 @@ class Monguana(MainWindow):
             _spawn(self._run(tid), "page")
         else:
             _el(f"{tid}-page").value = str(view["page"])
+
+    # -- the code editor (ROADMAP phase 31) ------------------------------
+
+    async def _load_asset(self, tag: str, attrs: dict) -> bool:
+        """Append a <script>/<link> and wait for its load or error event."""
+        future = asyncio.get_event_loop().create_future()
+        element = js.document.createElement(tag)
+        for name, value in attrs.items():
+            setattr(element, name, value)
+
+        def _settle(ok: bool):
+            def _handler(*_args) -> None:
+                if not future.done():
+                    future.set_result(ok)
+            proxy = create_proxy(_handler)
+            self._proxies.append(proxy)
+            return proxy
+
+        element.addEventListener("load", _settle(True))
+        element.addEventListener("error", _settle(False))
+        js.document.head.appendChild(element)
+        try:
+            return await asyncio.wait_for(future, EDITOR_LOAD_SECONDS)
+        except asyncio.TimeoutError:
+            return False
+
+    async def _ensure_editor(self) -> bool:
+        """
+        Load the editor bundle once; every caller awaits the same attempt.
+        A failure is remembered, so the page does not retry per tab.
+        """
+        if self._editor_ready is None:
+            self._editor_ready = asyncio.ensure_future(self._load_editor())
+        return await asyncio.shield(self._editor_ready)
+
+    async def _load_editor(self) -> bool:
+        if getattr(js.window, "MgEditor", None):
+            return True
+        loaded = await self._load_asset("script", {"src": EDITOR_SRC})
+        if not loaded or not getattr(js.window, "MgEditor", None):
+            js.console.warn("[monguana] editor bundle unavailable; keeping plain text boxes")
+            return False
+        return True
+
+    async def _attach_editor(self, tid: str, role: str, *, multiline: bool = False,
+                             max_height: str = "9em") -> None:
+        """
+        Put a CodeMirror editor over one of the view's text boxes.
+
+        The <textarea> stays in the DOM, hidden, as the source of truth: every
+        change is copied into it, so the code that reads query boxes needs no
+        editor awareness. Writes go through ``_set_text`` instead, which
+        updates both.
+        """
+        element_id = f"{tid}-{role}"
+        if element_id in self._editors or not await self._ensure_editor():
+            return
+        area = _el(element_id)
+        if not area or tid not in self._views:
+            return
+
+        host = js.document.createElement("div")
+        host.className = "mg-cm mg-grow"
+        host.dataset.role = f"{role}-editor"
+        area.parentNode.insertBefore(host, area)
+        hidden_before = bool(area.hidden)
+
+        def _on_change(text) -> None:
+            area.value = str(text)
+
+        def _on_run(*_args) -> None:
+            view = self._views.get(tid)
+            if view is not None:
+                view["page"] = 1
+                _spawn(self._run(tid), "run")
+
+        proxies = [create_proxy(_on_change), create_proxy(_on_run)]
+        options = to_js(
+            {
+                "value": str(area.value),
+                "placeholder": str(area.placeholder or ""),
+                "multiline": multiline,
+                "maxHeight": max_height,
+                "label": str(area.getAttribute("aria-label") or role),
+                "onChange": proxies[0],
+                "onRun": proxies[1],
+            },
+            dict_converter=js.Object.fromEntries,
+        )
+        editor = js.window.MgEditor.create(host, options)
+        self._editors[element_id] = {"editor": editor, "host": host, "proxies": proxies}
+        area.hidden = True
+        host.hidden = hidden_before
+        view = self._views.get(tid)
+        if view and view.get("schema"):
+            self._editor_fields(tid)
+
+    def _editor_fields(self, tid: str) -> None:
+        """Offer the sampled field paths as completions in this view's editors."""
+        schema = (self._views.get(tid) or {}).get("schema") or {}
+        fields = to_js(
+            [{"path": row["path"], "types": " | ".join(row["types"])}
+             for row in schema.get("fields", [])],
+            dict_converter=js.Object.fromEntries,
+        )
+        for element_id, entry in self._editors.items():
+            if element_id.startswith(f"{tid}-"):
+                entry["editor"].setFields(fields)
+
+    def _set_text(self, element_id: str, text: str, caret: int | None = None) -> None:
+        field = _el(element_id)
+        if field:
+            field.value = text
+        entry = self._editors.get(element_id)
+        if entry:
+            entry["editor"].setValue(text, caret if caret is not None else len(text))
+
+    def _focus_field(self, element_id: str) -> None:
+        entry = self._editors.get(element_id)
+        if entry:
+            entry["editor"].focus()
+            return
+        field = _el(element_id)
+        if field:
+            field.focus()
+
+    def _set_hidden(self, element_id: str, hidden: bool) -> None:
+        entry = self._editors.get(element_id)
+        if entry:
+            entry["host"].hidden = hidden
+            return
+        field = _el(element_id)
+        if field:
+            field.hidden = hidden
 
     # -- running queries -------------------------------------------------
 
@@ -1578,7 +1890,7 @@ class Monguana(MainWindow):
             return
         direction = -1 if payload.get("direction") == "desc" else 1
         view["tsort"] = payload.get("direction")
-        _el(f"{tid}-sort").value = "{" + json.dumps(str(column)) + f": {direction}" + "}"
+        self._set_text(f"{tid}-sort", "{" + json.dumps(str(column)) + f": {direction}" + "}")
         view["page"] = 1
         _spawn(self._run(tid), "sort")
 
@@ -1798,7 +2110,7 @@ class Monguana(MainWindow):
         elif action == "delete":
             _spawn(self._delete_rows(tid, [row]), "delete")
         elif action == "filter_id":
-            _el(f"{tid}-filter").value = "{_id: " + scalar_text(row["doc"].get("_id")) + "}"
+            self._set_text(f"{tid}-filter", "{_id: " + scalar_text(row["doc"].get("_id")) + "}")
             view["page"] = 1
             _spawn(self._run(tid), "filter by id")
 
@@ -2077,6 +2389,7 @@ class Monguana(MainWindow):
                 return
             self._status(tid)
             view["schema"] = result
+            self._editor_fields(tid)
         schema = view["schema"]
         sampled = max(1, schema["sampled"])
 
@@ -2120,7 +2433,7 @@ class Monguana(MainWindow):
             if action == "filter":
                 self._merge_into(f"{tid}-filter", f"{key}: ")
             elif action in ("sort_asc", "sort_desc"):
-                _el(f"{tid}-sort").value = "{" + f"{key}: {1 if action == 'sort_asc' else -1}" + "}"
+                self._set_text(f"{tid}-sort", "{" + f"{key}: {1 if action == 'sort_asc' else -1}" + "}")
             elif action == "project":
                 self._merge_into(f"{tid}-projection", f"{key}: 1")
             modal.close()
@@ -2141,26 +2454,25 @@ class Monguana(MainWindow):
         modal.body.addEventListener("click", proxy)
         modal.show()
 
-    @staticmethod
-    def _merge_into(element_id: str, fragment: str) -> None:
+    def _merge_into(self, element_id: str, fragment: str) -> None:
         """Add ``fragment`` as another key of the object in a query box."""
         field = _el(element_id)
         if not field:
             return
         current = str(field.value).strip()
         if not current or current == "{}":
-            field.value = "{" + fragment + "}"
+            text = "{" + fragment + "}"
             caret = 1 + len(fragment)
         elif current.endswith("}"):
             body = current[:-1].rstrip()
             separator = "" if body.endswith("{") else ", "
-            field.value = f"{body}{separator}{fragment}}}"
+            text = f"{body}{separator}{fragment}}}"
             caret = len(body) + len(separator) + len(fragment)
         else:
-            field.value = f"{current}, {fragment}"
-            caret = len(str(field.value))
-        field.focus()
-        field.selectionStart = field.selectionEnd = caret
+            text = f"{current}, {fragment}"
+            caret = len(text)
+        self._set_text(element_id, text, caret)
+        self._focus_field(element_id)
 
     # -- export, dump, restore --------------------------------------------
 
@@ -2499,6 +2811,8 @@ _CSS = """
 .mg-qrow{display:flex;align-items:flex-start;gap:6px;}
 .mg-qrow > .mg-input{flex:1 1 0;min-width:0;}
 .mg-grow{flex:1 1 auto;min-width:0;}
+.mg-cm{flex:1 1 0;min-width:0;}
+.mg-cm .cm-editor{min-height:31px;}
 .mg-qbuttons{display:flex;gap:4px;flex:0 0 auto;}
 .mg-input,.mg-select{background:var(--mg-bg);color:var(--mg-text);border:1px solid var(--mg-line-2);
   border-radius:6px;padding:6px 8px;font:12.5px system-ui,sans-serif;box-sizing:border-box;}
@@ -2580,6 +2894,13 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .mg-split-top{flex:1 1 auto;min-height:0;border:1px solid var(--mg-line);border-radius:6px;overflow:hidden;}
 .mg-split-bottom{flex:1 1 auto;min-height:0;}
 .mg-split-bottom-auto{flex:0 0 auto;}
+.mg-plan{padding:10px 12px;border-radius:6px;background:#0b1f1a;border:1px solid #065f46;
+  display:flex;flex-direction:column;gap:6px;}
+.mg-plan[data-strategy="drop-then-build"]{background:#2a1d06;border-color:#92400e;}
+.mg-plan-head{display:flex;align-items:center;gap:8px;color:var(--mg-text);font-weight:600;}
+.mg-plan-head .mdi{font-size:17px;color:#34d399;}
+.mg-plan[data-strategy="drop-then-build"] .mg-plan-head .mdi{color:#fbbf24;}
+.mg-plan-how{color:var(--mg-muted);font-size:12.5px;line-height:1.45;}
 .mg-warn{padding:8px 12px;border-radius:6px;background:#3b2506;color:#fcd34d;}
 .mg-preview-count{font-size:14px;color:var(--mg-text);}
 .mg-preview-label{color:var(--mg-dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;}
