@@ -46,3 +46,17 @@ def test_uuids_stored_as_binary_read_as_uuids():
     assert docfmt.cell_text(value) == 'UUID("12345678-1234-5678-1234-567812345678")'
     other = {"$binary": {"base64": "AAE=", "subType": "00"}}
     assert docfmt.cell_text(other) == "Binary(00, 2 bytes)"
+
+
+def test_column_state_applies_saved_order_and_widths():
+    state = {"order": ["name", "_id", "gone"], "widths": {"name": 150, "_id": 200}}
+    assert docfmt.apply_column_state(["_id", "age", "name"], state, {"_id": 230}) == [
+        ("name", 150), ("_id", 200), ("age", None),
+    ]
+    assert docfmt.apply_column_state(["_id", "a"], None, {"_id": 230}) == [("_id", 230), ("a", None)]
+
+
+def test_column_state_merge_keeps_what_is_not_on_the_page():
+    state = {"order": ["a", "b", "c"], "widths": {"c": 90}}
+    merged = docfmt.merge_column_state(state, [{"id": "b", "width": 120}, {"id": "a", "width": None}])
+    assert merged == {"order": ["b", "a", "c"], "widths": {"c": 90, "b": 120}}

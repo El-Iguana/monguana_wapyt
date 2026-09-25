@@ -41,6 +41,7 @@ appcode/                    # pytincture modules_path
     connection_service.py   #   BFF: profiles, test, connect/disconnect
     mongo_service.py        #   BFF: databases, collections, documents, indexes…
     user_service.py         #   BFF: accounts (from IguanaXterm)
+    ui_state_service.py     #   BFF: per-user UI state (column layouts)
     transfer.py             #   plain routes under /mg: export, dump, restore
   static/                   #   artwork, same-origin
   vendor/codemirror/        #   the editor bundle (built, committed), served at /vendor
@@ -288,6 +289,19 @@ one place. Cards come back from it with `pipeline_text.split`.
 - Run to here sends `compose(stages, upto=i)` straight to `_aggregate`
   without touching the text.
 
+### Column layout (ROADMAP phase 35)
+
+The collection table opts in to wapyt's `resizable_columns` and
+`reorderable_columns`. Its `columns` event is folded into `view["columns"]`
+(`docfmt.merge_column_state`) and saved 0.4 s later under
+`columns:<conn>:<db>:<coll>` by `UiStateService`; `_render_table` applies it
+(`docfmt.apply_column_state`) in find mode only. Renaming a collection starts
+it with a fresh layout.
+
+- **pytincture validates BFF arguments against their annotations.** `None`
+  for a `dict` parameter is a 400 before the method runs — hence
+  `UiStateService.clear(key)` rather than `set(key, None)`.
+
 ### JS properties that may be missing
 
 Reading `element.dataset.x`, or any property, that the JS object lacks
@@ -335,8 +349,7 @@ in the background (`_sample_fields`) so completions offer field paths at once.
 
 See ROADMAP.md for the plan. In short:
 
-1. **Column width/order persistence** per collection.
-2. **Dump/restore progress console.** Restore returns a per-collection summary
+1. **Dump/restore progress console.** Restore returns a per-collection summary
    when done; no live progress.
 
 ## Conventions

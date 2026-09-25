@@ -11,7 +11,7 @@ PRs or other branches). Numbering continues from the original's.
 | 6: Monaco + autocomplete | CodeMirror in every query box and the document editor, with field completions (phases 31–32) | — |
 | 10: Visual query builder | Builder panel with typed values (phase 33) | — |
 | 11: Pipeline builder | Stage cards + Raw, with Run to here (phase 34) | — |
-| 24: Column width/order memory | Nothing | wapyt's DataTable cannot resize or reorder columns |
+| 24: Column width/order memory | Resize and reorder, saved per user on the server (phase 35) | — |
 | 13/16: Dump/restore progress console | Summary when it finishes | No live progress |
 | Small items | | View mode not remembered; `system.*` collections always listed |
 
@@ -109,12 +109,29 @@ set of create options. See CLAUDE.md, *Index CRUD*.
   `undefined`), so a plain stage box — no `data-role` — crashed the change
   handler. Such reads now go through `getAttribute` (`_role`).
 
-## Phase 35: column width/order memory (original phase 24)
+## Phase 35: column width/order memory (original phase 24) — done (2026-09-25)
 
-- First a wapyt change: resizable columns, drag-to-reorder, and a
-  column-change event. It benefits IguanaXterm's file table too.
-- Then the app saves each collection's column state per user, on the server,
-  not per browser as the original did.
+- **wapyt DataTable** gained opt-in `resizable_columns` (drag a header's right
+  edge) and `reorderable_columns` (drag a header onto another), a `columns`
+  event with `[{id, width}]`, `get_column_state()` and `move_column()`. Off by
+  default, so IguanaXterm is unchanged.
+- **Monguana** saves each collection's widths and order **per user on the
+  server** (`ui_state` table, `UiStateService`), not per browser as the
+  original did, and reapplies them whenever the table is drawn. Saves are
+  debounced. A page missing some fields keeps their saved place and width
+  (`docfmt.merge_column_state` / `apply_column_state`, unit-tested).
+  Aggregation output has its own shape and is not saved. A **Reset columns**
+  button next to the view switch forgets the layout.
+- **Bugs found building it:**
+  - The resize grip overhung its header by 4 px, and the next sticky header
+    (its own stacking context) painted over the overhang, so a press there
+    started a column drag instead of a resize. The grip now sits inside.
+  - A header's inline width set its *content* box while widths were measured
+    as border boxes, so freezing widths added 20 px of padding to every
+    column. Resizable tables are `box-sizing: border-box`.
+  - `UiStateService.set(key, None)` was refused with a 400: pytincture
+    validates arguments against annotations, and `None` is not a `dict`.
+    Deleting is its own `clear(key)`.
 
 ## Phase 36: dump/restore progress (original phases 13/16)
 
@@ -136,5 +153,4 @@ set of create options. See CLAUDE.md, *Index CRUD*.
 
 ## Order
 
-31–34 are done; 35 (column width/order memory) next. It starts with a wapyt
-change: resizable, reorderable DataTable columns.
+31–35 are done; 36 (dump/restore progress) next.

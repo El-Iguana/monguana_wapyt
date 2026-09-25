@@ -231,3 +231,38 @@ def format_bytes(size: Any) -> str:
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
     return ""
+
+
+def apply_column_state(keys: list, state: dict | None, default_widths: dict | None = None) -> list:
+    """
+    The table's columns for this page, in the saved order with saved widths.
+
+    ``state`` is ``{"order": [...], "widths": {key: px}}``. Documents are
+    schemaless, so a page may lack saved columns (they are skipped) or carry
+    new ones (appended in their natural order). Returns ``[(key, width)]``,
+    ``width`` None where nothing is saved or defaulted.
+    """
+    state = state or {}
+    order = [key for key in state.get("order", []) if key in keys]
+    order += [key for key in keys if key not in order]
+    widths = state.get("widths", {})
+    defaults = default_widths or {}
+    return [(key, widths.get(key, defaults.get(key))) for key in order]
+
+
+def merge_column_state(state: dict | None, columns: list) -> dict:
+    """
+    Fold a table's ``[{id, width}]`` (display order) into the saved state.
+
+    Columns not on this page keep their saved widths and stay in the order
+    after the visible ones, so a page without some field does not forget
+    where it went.
+    """
+    state = state or {}
+    visible = [column["id"] for column in columns]
+    widths = dict(state.get("widths", {}))
+    for column in columns:
+        if column.get("width") is not None:
+            widths[column["id"]] = int(column["width"])
+    order = visible + [key for key in state.get("order", []) if key not in visible]
+    return {"order": order, "widths": widths}
