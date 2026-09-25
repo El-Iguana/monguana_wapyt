@@ -132,6 +132,15 @@ def main() -> int:
             filter_box.fill(text)
             filter_box.press("Enter")
 
+        step("field paths complete without opening Fields (background sample)")
+        sort_box = view.locator("[data-role=sort-editor] .cm-content")
+        sort_box.click()
+        page.keyboard.type("{customer.add")
+        expect(page.locator(".cm-tooltip-autocomplete li").first).to_contain_text(
+            "customer.address", timeout=10000)
+        page.keyboard.press("Escape")
+        sort_box.fill("")
+
         step("filter with shell syntax: dates and nested fields")
         set_filter(
             '{status: "paid", placed: {$gte: ISODate("2026-03-01")}, "customer.vip": false}'
@@ -169,16 +178,24 @@ def main() -> int:
         shot(page, "04-tree")
         view.locator("[data-mg=view][data-view=table]").click()
 
-        step("edit a document in the editor, keep its types")
+        step("edit a document in the code editor, keep its types")
         rows.first.dblclick()
         editor = page.locator(".wapyt-modal-overlay").last
-        area = editor.locator(".mg-editor-text")
-        expect(area).to_be_visible(timeout=10000)
-        text = area.input_value()
+        doc_box = editor.locator("[data-role=document-editor] .cm-content")
+        expect(doc_box).to_be_visible(timeout=10000)
+        mirror = editor.locator(".mg-editor-text")  # hidden, the source of truth
+        text = mirror.input_value()
         assert '"$date"' in text and '"$numberDecimal"' in text
-        area.fill(text.replace('"status": "', '"status": "edited-', 1))
+        # Escape that closes a completion list must not close the dialog.
+        doc_box.press("Control+End")
+        page.keyboard.type("$in")
+        expect(page.locator(".cm-tooltip-autocomplete")).to_be_visible(timeout=5000)
+        page.keyboard.press("Escape")
+        expect(page.locator(".cm-tooltip-autocomplete")).to_have_count(0)
+        expect(doc_box).to_be_visible()
+        doc_box.fill(text.replace('"status": "', '"status": "edited-', 1))
         shot(page, "05-editor")
-        area.press("Control+s")
+        doc_box.press("Control+s")
         expect(page.locator("#mg-toast")).to_have_text("Saved.", timeout=10000)
         page.wait_for_timeout(800)
         assert "edited-" in rows.first.inner_text()
@@ -186,7 +203,8 @@ def main() -> int:
         step("updateMany shows a preview, then applies")
         view.locator(f"#{tid}-mode").select_option("updateMany")
         filter_box.fill('{status: /^edited-/}')
-        view.locator(f"#{tid}-update").fill('{$set: {status: "paid"}}')
+        update_box = view.locator("[data-role=update-editor] .cm-content")
+        update_box.fill('{$set: {status: "paid"}}')
         view.locator("[data-mg=run]").click()
         confirm = page.locator(".wapyt-modal-overlay").last
         expect(confirm.locator(".mg-preview-count")).to_contain_text("1 document(s) match")
@@ -197,10 +215,13 @@ def main() -> int:
 
         step("aggregate")
         view.locator(f"#{tid}-mode").select_option("aggregate")
-        view.locator(f"#{tid}-pipeline").fill(
-            '[{$group: {_id: "$status", n: {$sum: 1}}}, {$sort: {n: -1}}]'
-        )
-        view.locator(f"#{tid}-pipeline").press("Control+Enter")
+        pipeline_box = view.locator("[data-role=pipeline-editor] .cm-content")
+        expect(pipeline_box).to_be_visible()
+        # A stage template goes into the editor, not just the hidden box.
+        view.locator("select[data-role=stage]").select_option("$limit")
+        expect(pipeline_box).to_contain_text("$limit: 10")
+        pipeline_box.fill('[{$group: {_id: "$status", n: {$sum: 1}}}, {$sort: {n: -1}}]')
+        pipeline_box.press("Control+Enter")
         expect(view.locator(".mg-summary")).to_have_text("4 result(s)", timeout=10000)
         shot(page, "07-aggregate")
 
@@ -335,6 +356,12 @@ def main() -> int:
         plain.locator(f"#{ftid}-filter").fill('{status: "new"}')
         plain.locator(f"#{ftid}-filter").press("Enter")
         expect(plain.locator(".mg-summary")).not_to_have_text("1–50 of 137", timeout=10000)
+        plain.locator("[data-role=sort]").fill("{number: 1}")
+        assert plain.locator("[data-role=pipeline]").count() == 1
+        plain.locator(".wapyt-datatable-table tbody tr[data-row-id]").first.dblclick()
+        plain_doc = fallback.locator(".wapyt-modal-overlay").last.locator(".mg-editor-text")
+        expect(plain_doc).to_be_visible(timeout=10000)
+        assert '"_id"' in plain_doc.input_value()
 
         browser.close()
 
