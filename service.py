@@ -136,6 +136,11 @@ class BodyLimitExceptRestore:
 
 def build_app():
     init_db()
+    # Job files (dumps, uploaded restores) belong to jobs that died with the
+    # last process.
+    from services.jobs import clear_leftovers
+
+    clear_leftovers()
 
     # Registered by dotted path, not by setter: create_app() loads its own
     # isolated backend module, which a setter called against the shared one

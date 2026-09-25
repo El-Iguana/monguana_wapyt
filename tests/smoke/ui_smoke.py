@@ -424,11 +424,23 @@ def main() -> int:
         assert lines[0].startswith("_id,number,status"), lines[0]
         assert len(lines) == 138, len(lines)
 
-        step("dump a collection, restore it into another database")
+        step("dump a collection as a job with progress, restore it into another database")
         orders.click(button="right")
-        with page.expect_download() as info:
+        with page.expect_download(timeout=30000) as info:
             menu.locator("text=Dump collection").click()
+            console = page.locator(".wapyt-modal-overlay").last
+            expect(console.locator(".mg-console-state")).to_have_attribute(
+                "data-state", "done", timeout=30000)
         dump_path = info.value.path()
+        dumped = console.locator(".mg-console-item").first
+        expect(dumped).to_contain_text("shop.orders")
+        expect(dumped).to_contain_text("137 documents")
+        expect(console.locator(".mg-console-log")).to_contain_text("✓ shop.orders: 137 documents")
+        expect(console.locator('[data-job="download"]')).to_be_visible()
+        expect(console.locator('[data-job="cancel"]')).to_be_hidden()
+        shot(page, "11a-dump-console")
+        console.locator('[data-job="close"]').click()
+
         server_row.click(button="right")
         menu.locator("text=Restore dump…").click()
         restore = page.locator(".wapyt-modal-overlay").last
@@ -438,11 +450,17 @@ def main() -> int:
         )
         restore.locator('input[name="db"]').fill("shop_copy")
         restore.locator(".wapyt-form-button-primary").click()
-        expect(restore.locator(".mg-restore-result")).to_contain_text(
-            "shop_copy.orders: 137 inserted, 2 index(es)", timeout=20000
-        )
+        # The upload finishes, the dialog closes, and the job's console opens.
+        console = page.locator(".wapyt-modal-overlay").last
+        expect(console.locator(".wapyt-modal-title")).to_contain_text("Restore shop_orders.zip into shop_copy",
+                                                                      timeout=20000)
+        expect(console.locator(".mg-console-state")).to_have_attribute("data-state", "done", timeout=30000)
+        restored = console.locator(".mg-console-item").first
+        expect(restored).to_contain_text("shop_copy.orders")
+        expect(restored).to_contain_text("137 inserted, 2 index(es)")
+        expect(restored).to_have_attribute("data-state", "done")
         shot(page, "11-restore")
-        restore.locator(".wapyt-form-button-ghost").click()
+        console.locator('[data-job="close"]').click()
         copy = page.locator(".wapyt-tree-row[data-node-id$=':shop_copy']").first
         expect(copy).to_be_visible(timeout=10000)
         copy.click(button="right")
