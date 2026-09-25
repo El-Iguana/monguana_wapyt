@@ -42,6 +42,8 @@ appcode/                    # pytincture modules_path
     mongo_service.py        #   BFF: databases, collections, documents, indexes…
     user_service.py         #   BFF: accounts (from IguanaXterm)
     ui_state_service.py     #   BFF: per-user UI state (column layouts)
+    jobs.py                 #   background jobs + progress — plain module, NOT a BFF
+    job_service.py          #   BFF: start a dump; status/cancel any job
     transfer.py             #   plain routes under /mg: export, dump, restore
   static/                   #   artwork, same-origin
   vendor/codemirror/        #   the editor bundle (built, committed), served at /vendor
@@ -187,17 +189,40 @@ clients close after 15 minutes.
 
 ### Plain routes for bytes — `transfer.py`, under `/mg`
 
-Export (`GET /mg/export/<id>`), dump (`GET /mg/dump/<id>`) and restore
-(`POST /mg/restore/<id>`, body = the ZIP itself) are plain FastAPI routes that
-read pytincture's session cookie, as IguanaXterm's transfers do. The BFF is
-JSON and capped at 2 MiB, so a dump through it would be base64 in Pyodide's
-heap. Export streams every match (not just the page) up to 1M (JSON) / 100k
-(CSV); the UI checks the filter with a count first, because a bad one would
-otherwise surface as a failed download with no message. Dump builds a
-mongodump-layout ZIP into a spooled temp file on a worker thread, reading raw
-BSON (`RawBSONDocument`) so documents are never decoded and re-encoded. Note
-`insert_many` returns an empty `inserted_ids` for `RawBSONDocument`s — restore
-counts the batch instead.
+Export (`GET /mg/export/<id>`), restore (`POST /mg/restore/<id>`, body = the
+ZIP itself) and a finished job's download (`GET /mg/jobs/<job>/download`) are
+plain FastAPI routes that read pytincture's session cookie, as IguanaXterm's
+transfers do. The BFF is JSON and capped at 2 MiB, so bytes through it would be
+base64 in Pyodide's heap. Export streams every match (not just the page) up to
+1M (JSON) / 100k (CSV); the UI checks the filter with a count first, because a
+bad one would otherwise surface as a failed download with no message. Dumps
+read raw BSON (`RawBSONDocument`) so documents are never decoded and
+re-encoded. Note `insert_many` returns an empty `inserted_ids` for
+`RawBSONDocument`s — restore counts the batch instead.
+
+### Dump and restore are jobs (ROADMAP phase 36)
+
+`services/jobs.py` is the registry — a **plain module**, since a BFF module is
+re-executed per call and would hand each poll an empty one. A job runs its work
+on its own thread with a `Progress` (items with done/total, a log, `partial`
+results, `check()` for cooperative cancel); the page polls
+`JobService.status(job, log_from)` every 0.5 s and draws the console
+(`_job_console`). Not a `@bff_stream`: pytincture caps those at 300 s.
+
+- **Dump:** `JobService.start_dump` → `transfer.write_dump` writes the ZIP to
+  `DATA_DIR/jobs/`, per-collection totals from `estimated_document_count` and
+  corrected to the real count at the end. The console downloads it from
+  `/mg/jobs/<id>/download` when done; "Download again" works for an hour.
+- **Restore:** the upload (XHR, for upload progress) lands in
+  `DATA_DIR/jobs/` and `POST /mg/restore` answers with the job id at once.
+  Progress is bytes of each `.bson` member read (through `_Counting`); what was
+  restored before a cancel is kept as the result.
+- Finished jobs and their files are dropped after an hour (`purge`), leftovers
+  from a previous process at startup (`clear_leftovers`), a cancelled or
+  failed dump's partial file at once. At most 3 running jobs per user.
+- **`hidden` does not hide an `.mg-btn`** (its `display:inline-flex` wins):
+  the console's Cancel stayed on screen after the job ended until
+  `.mg-btn[hidden]` got its own rule. IguanaXterm hit the same trap.
 
 ### The UI
 
@@ -345,12 +370,10 @@ in the background (`_sample_fields`) so completions offer field paths at once.
   records `securitypolicyviolation` events, and repeats a query with the
   bundle blocked to prove the fallback.
 
-## Not built yet (the original had these)
+## Not built yet
 
-See ROADMAP.md for the plan. In short:
-
-1. **Dump/restore progress console.** Restore returns a per-collection summary
-   when done; no live progress.
+Every gap from the original is closed (ROADMAP phases 31–36). ROADMAP.md
+phase 37 lists the small items that remain.
 
 ## Conventions
 

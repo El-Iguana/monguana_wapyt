@@ -72,6 +72,9 @@ restoring the old one if a same-name rebuild fails.
 CSV. Dump a database or a collection in `mongodump` layout (BSON + index
 metadata, ZIP), restore it here or with `mongorestore`; restore a zipped
 `mongodump` directory here, skipping, replacing or dropping what exists.
+Dumps and restores run in the background with a progress console — a bar per
+collection, a log, and Cancel — and the restore upload shows its own
+progress.
 
 **Accounts.** Multiple users with their own connection profiles, an admin
 panel, and password changes.

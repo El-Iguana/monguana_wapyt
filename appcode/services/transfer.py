@@ -22,8 +22,8 @@ import json
 import os
 import posixpath
 import re
-import tempfile
 import zipfile
+from pathlib import Path
 from typing import Iterator, Optional
 
 import anyio
@@ -184,84 +184,94 @@ async def export(
 
 
 # ---------------------------------------------------------------------------
-# Dump
+# Dump (a job: JobService.start_dump; the ZIP is fetched from here when done)
 # ---------------------------------------------------------------------------
 
-@router.get("/dump/{conn_id}")
-async def dump(request: Request, conn_id: int, db: str, coll: str = ""):
-    """
-    A database, or one collection, as a mongodump-layout ZIP.
+def dump_specs(database, coll: str) -> list:
+    """The collections a dump covers: one, or every ordinary one in the db."""
+    if coll:
+        specs = list(database.list_collections(filter={"name": coll}))
+        if not specs:
+            raise LookupError(f"Collection {coll!r} not found")
+        return specs
+    return [
+        spec for spec in database.list_collections()
+        if spec.get("type", "collection") == "collection"
+        and not spec["name"].startswith("system.")
+    ]
 
-    Built into a spooled temporary file on a worker thread (in memory up to
-    32 MB, then on disk) and streamed from there. The original held every
-    document of every collection in a Python list and then the whole ZIP in a
-    BytesIO, twice over in memory for a database of any size.
+
+def write_dump(client, db: str, coll: str, path, progress=None) -> dict:
     """
+    Write a mongodump-layout ZIP to ``path``, reporting per collection.
+
+    Documents are read as raw BSON (``RawBSONDocument``) and written as they
+    come: never decoded, re-encoded or held in memory. The original held every
+    document of every collection in a list, then the whole ZIP in a BytesIO.
+    """
+    from bson import json_util
+    from bson.codec_options import CodecOptions
+    from bson.raw_bson import RawBSONDocument
+
+    from services.jobs import Progress
+
+    progress = progress or Progress()
+    raw = CodecOptions(document_class=RawBSONDocument)
+    database = client[db]
+    specs = dump_specs(database, coll)
+    progress.log(f"Dumping {len(specs)} collection(s) from {db}")
+    summary: list = []
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for spec in specs:
+            name = spec["name"]
+            key = f"{db}.{name}"
+            try:
+                estimate = database[name].estimated_document_count()
+            except Exception:  # noqa: BLE001 - a view or no privilege: no total
+                estimate = None
+            progress.item(key, key, estimate, "documents")
+            collection = database.get_collection(name, codec_options=raw)
+            count = 0
+            with archive.open(f"{db}/{name}.bson", "w", force_zip64=True) as out:
+                for doc in collection.find():
+                    out.write(doc.raw)
+                    count += 1
+                    if count % 500 == 0:
+                        progress.advance(key, count)
+                        progress.check()
+            indexes = list(database[name].list_indexes())
+            metadata = {
+                "collectionName": name,
+                "type": spec.get("type", "collection"),
+                "options": spec.get("options", {}),
+                "indexes": indexes,
+            }
+            archive.writestr(
+                f"{db}/{name}.metadata.json",
+                json_util.dumps(metadata, json_options=json_util.CANONICAL_JSON_OPTIONS),
+            )
+            # The estimate was metadata; the count is what was written.
+            progress.finish(key, note=f"{count:,} documents, {len(indexes)} index(es)", total=count)
+            summary.append({"collection": name, "documents": count, "indexes": len(indexes)})
+            progress.log(f"✓ {key}: {count:,} documents, {len(indexes)} index(es)")
+            progress.partial({"collections": summary})
+    size = Path(path).stat().st_size
+    progress.log(f"Done: {size:,} bytes")
+    return {"collections": summary, "bytes": size}
+
+
+@router.get("/jobs/{job_id}/download")
+async def job_download(request: Request, job_id: str):
+    """The file a finished job produced (a dump), for its owner only."""
+    from fastapi.responses import FileResponse
+
+    from services import jobs
+
     user_id = _require_user(request)
-    client = _client(user_id, conn_id)
-
-    def build():
-        from bson import json_util
-        from bson.codec_options import CodecOptions
-        from bson.raw_bson import RawBSONDocument
-
-        raw = CodecOptions(document_class=RawBSONDocument)
-        database = client[db]
-        if coll:
-            specs = list(database.list_collections(filter={"name": coll}))
-            if not specs:
-                raise LookupError(f"Collection {coll!r} not found")
-        else:
-            specs = [
-                spec for spec in database.list_collections()
-                if spec.get("type", "collection") == "collection"
-                and not spec["name"].startswith("system.")
-            ]
-
-        spool = tempfile.SpooledTemporaryFile(max_size=32 * 1024 * 1024)
-        with zipfile.ZipFile(spool, "w", zipfile.ZIP_DEFLATED) as archive:
-            for spec in specs:
-                name = spec["name"]
-                collection = database.get_collection(name, codec_options=raw)
-                with archive.open(f"{db}/{name}.bson", "w", force_zip64=True) as out:
-                    for doc in collection.find():
-                        out.write(doc.raw)
-                metadata = {
-                    "collectionName": name,
-                    "type": spec.get("type", "collection"),
-                    "options": spec.get("options", {}),
-                    "indexes": list(database[name].list_indexes()),
-                }
-                archive.writestr(
-                    f"{db}/{name}.metadata.json",
-                    json_util.dumps(metadata, json_options=json_util.CANONICAL_JSON_OPTIONS),
-                )
-        size = spool.tell()
-        spool.seek(0)
-        return spool, size
-
-    try:
-        spool, size = await anyio.to_thread.run_sync(build)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-    except Exception as exc:  # noqa: BLE001
-        from services.mongo_pool import error_text
-
-        raise HTTPException(status_code=400, detail=error_text(exc)) from None
-
-    def chunks() -> Iterator[bytes]:
-        try:
-            while True:
-                block = spool.read(_CHUNK)
-                if not block:
-                    break
-                yield block
-        finally:
-            spool.close()
-
-    headers = _attachment(f"{_safe_filename(db, coll)}.zip")
-    headers["Content-Length"] = str(size)
-    return StreamingResponse(chunks(), media_type="application/zip", headers=headers)
+    job = jobs.get(job_id, user_id)
+    if job is None or job.state != jobs.DONE or job.path is None or not job.path.exists():
+        raise HTTPException(status_code=404, detail="No such download (it may have expired)")
+    return FileResponse(job.path, media_type="application/zip", filename=job.filename)
 
 
 # ---------------------------------------------------------------------------
@@ -271,16 +281,20 @@ async def dump(request: Request, conn_id: int, db: str, coll: str = ""):
 @router.post("/restore/{conn_id}")
 async def restore(request: Request, conn_id: int, mode: str = "skip", db: str = ""):
     """
-    Restore a dump ZIP. The body is the ZIP itself (``application/zip``), not a
-    multipart form: nothing needs parsing, and nothing is read until the
-    caller is authenticated and the CSRF token checks out.
+    Upload a dump ZIP and start restoring it as a job; returns the job id.
 
-    ``db`` restores every collection in the archive into that one database;
-    without it, each goes to the database named by its folder.
+    The body is the ZIP itself (``application/zip``), not a multipart form:
+    nothing needs parsing, and nothing is read until the caller is
+    authenticated and the CSRF token checks out. It goes to a file, since the
+    job outlives this request.
 
-    Modes: ``skip`` keeps documents whose ``_id`` already exists, ``drop``
-    empties each collection first, ``merge`` replaces by ``_id``.
+    ``db`` restores every collection into that one database; without it, each
+    goes to the database named by its folder. Modes: ``skip`` keeps documents
+    whose ``_id`` exists, ``drop`` empties each collection first, ``merge``
+    replaces by ``_id``.
     """
+    from services import jobs
+
     user_id = _require_user(request)
     _require_csrf(request)
     if mode not in RESTORE_MODES:
@@ -295,24 +309,48 @@ async def restore(request: Request, conn_id: int, mode: str = "skip", db: str = 
     if declared and declared.isdigit() and int(declared) > limit:
         raise HTTPException(status_code=413, detail=f"Larger than the {limit:,}-byte limit")
 
-    spool = tempfile.SpooledTemporaryFile(max_size=32 * 1024 * 1024)
+    upload = jobs.new_file(".zip")
     try:
         received = 0
-        async for block in request.stream():
-            received += len(block)
-            if received > limit:
-                raise HTTPException(status_code=413, detail=f"Larger than the {limit:,}-byte limit")
-            await anyio.to_thread.run_sync(spool.write, block)
-        spool.seek(0)
-        if not zipfile.is_zipfile(spool):
+        with open(upload, "wb") as out:
+            async for block in request.stream():
+                received += len(block)
+                if received > limit:
+                    raise HTTPException(status_code=413, detail=f"Larger than the {limit:,}-byte limit")
+                await anyio.to_thread.run_sync(out.write, block)
+        if not zipfile.is_zipfile(upload):
             raise HTTPException(status_code=400, detail="That is not a ZIP file")
-        spool.seek(0)
-        summary = await anyio.to_thread.run_sync(
-            restore_archive, client, spool, mode, target_db or None
-        )
-    finally:
-        spool.close()
-    return JSONResponse({"ok": True, **summary})
+    except BaseException:
+        upload.unlink(missing_ok=True)
+        raise
+
+    def work(progress) -> dict:
+        try:
+            with open(upload, "rb") as archive:
+                return restore_archive(client, archive, mode, target_db or None, progress)
+        finally:
+            upload.unlink(missing_ok=True)
+
+    title = f"Restore into {target_db}" if target_db else "Restore"
+    try:
+        job = jobs.start(user_id, "restore", title, work)
+    except jobs.JobLimit as exc:
+        upload.unlink(missing_ok=True)
+        raise HTTPException(status_code=429, detail=str(exc)) from None
+    return JSONResponse({"ok": True, "job": job.id, "bytes": received})
+
+
+class _Counting:
+    """A read-only stream that remembers how much has been read from it."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self.count = 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._stream.read(size)
+        self.count += len(data)
+        return data
 
 
 def plan_restore(names: list[str], target_db: Optional[str]) -> tuple[list[dict], list[str]]:
@@ -353,7 +391,13 @@ def plan_restore(names: list[str], target_db: Optional[str]) -> tuple[list[dict]
     return jobs, skipped
 
 
-def restore_archive(client, archive_file, mode: str, target_db: Optional[str]) -> dict:
+def restore_archive(client, archive_file, mode: str, target_db: Optional[str],
+                    progress=None) -> dict:
+    """
+    Restore every planned collection, reporting bytes read per collection
+    (a member's uncompressed size is its total) and stopping between batches
+    if cancelled. What was restored before a cancel is kept as the result.
+    """
     import bson
     from bson import json_util
     from bson.codec_options import CodecOptions
@@ -361,12 +405,22 @@ def restore_archive(client, archive_file, mode: str, target_db: Optional[str]) -
     from pymongo import ReplaceOne
     from pymongo.errors import BulkWriteError
 
+    from services.jobs import Progress
+
+    progress = progress or Progress()
     raw = CodecOptions(document_class=RawBSONDocument)
     results: list[dict] = []
     with zipfile.ZipFile(archive_file) as archive:
         members = set(archive.namelist())
         jobs, skipped = plan_restore(sorted(members), target_db)
+        for entry in skipped:
+            progress.log(f"– skipped {entry}")
         for job in jobs:
+            key = f"{job['db']}.{job['collection']}"
+            progress.item(key, key, archive.getinfo(job["member"]).file_size, "bytes")
+        progress.log(f"Restoring {len(jobs)} collection(s), mode {mode}")
+        for job in jobs:
+            key = f"{job['db']}.{job['collection']}"
             outcome = {
                 "db": job["db"], "collection": job["collection"],
                 "inserted": 0, "replaced": 0, "skipped": 0, "errors": [], "indexes": 0,
@@ -400,16 +454,30 @@ def restore_archive(client, archive_file, mode: str, target_db: Optional[str]) -
                         elif len(outcome["errors"]) < 5:
                             outcome["errors"].append(error.get("errmsg", "write error"))
 
+            def report() -> None:
+                done = outcome["inserted"] + outcome["replaced"] + outcome["skipped"]
+                progress.advance(key, stream.count, note=f"{done:,} documents")
+
             try:
-                with archive.open(job["member"]) as stream:
+                with archive.open(job["member"]) as member:
+                    stream = _Counting(member)
                     batch: list = []
                     for doc in bson.decode_file_iter(stream, codec_options=raw):
                         batch.append(doc)
                         if len(batch) >= _BATCH:
                             flush(batch)
                             batch = []
+                            report()
+                            progress.check()
                     flush(batch)
+                    report()
             except Exception as exc:  # noqa: BLE001 - reported per collection
+                from services.jobs import Cancelled
+
+                if isinstance(exc, Cancelled):
+                    results.append(outcome)
+                    progress.partial({"collections": results, "skipped": skipped})
+                    raise
                 outcome["errors"].append(str(exc)[:300])
 
             if job["metadata"] in members:
@@ -428,4 +496,17 @@ def restore_archive(client, archive_file, mode: str, target_db: Optional[str]) -
                 except Exception as exc:  # noqa: BLE001
                     outcome["errors"].append(f"indexes: {str(exc)[:300]}")
             results.append(outcome)
+            parts = [f"{outcome['inserted']:,} inserted"]
+            if outcome["replaced"]:
+                parts.append(f"{outcome['replaced']:,} replaced")
+            if outcome["skipped"]:
+                parts.append(f"{outcome['skipped']:,} skipped")
+            if outcome["indexes"]:
+                parts.append(f"{outcome['indexes']} index(es)")
+            note = ", ".join(parts)
+            progress.finish(key, "failed" if outcome["errors"] and not outcome["inserted"] else "done", note)
+            progress.log(f"{'⚠' if outcome['errors'] else '✓'} {key}: {note}")
+            for error in outcome["errors"]:
+                progress.log(f"    {error}")
+            progress.partial({"collections": results, "skipped": skipped})
     return {"collections": results, "skipped": skipped}

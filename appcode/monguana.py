@@ -52,6 +52,7 @@ from wapyt import (
 )
 
 from services.connection_service import ConnectionService
+from services.job_service import JobService
 from services.docfmt import (
     apply_column_state,
     cell_text,
@@ -744,9 +745,9 @@ class Monguana(MainWindow):
         if action == "open":
             self._open_view(conn_id, db, coll, data.get("kind", "collection"))
         elif action == "dump_db":
-            _download(f"/mg/dump/{conn_id}?" + urlencode({"db": db}))
+            _spawn(self._start_dump(conn_id, db, ""), "dump database")
         elif action == "dump_coll":
-            _download(f"/mg/dump/{conn_id}?" + urlencode({"db": db, "coll": coll}))
+            _spawn(self._start_dump(conn_id, db, coll), "dump collection")
         elif action in handlers:
             _spawn(handlers[action](), action)
 
@@ -3150,45 +3151,181 @@ class Monguana(MainWindow):
                 return
             form.set_busy(True)
             result_el.hidden = False
-            result_el.textContent = f"Uploading {format_bytes(upload.size)}…"
+            size = format_bytes(upload.size)
+
+            def _uploaded(sent: int, total: int) -> None:
+                percent = int(100 * sent / total) if total else 0
+                result_el.textContent = f"Uploading {size}… {percent}%"
+
+            params = urlencode({"mode": values.get("mode", "skip"),
+                                "db": (values.get("db") or "").strip()})
             try:
-                params = urlencode({"mode": values.get("mode", "skip"),
-                                    "db": (values.get("db") or "").strip()})
-                options = js.Object.new()
-                options.method = "POST"
-                options.credentials = "same-origin"
-                options.body = upload
-                headers = js.Object.new()
-                setattr(headers, "X-CSRF-Token", _csrf_token())
-                setattr(headers, "Content-Type", "application/zip")
-                options.headers = headers
-                response = await js.fetch(f"/mg/restore/{conn_id}?{params}", options)
-                payload = (await response.json()).to_py()
-            except Exception as exc:  # noqa: BLE001
-                result_el.textContent = f"Upload failed: {exc}"
-                return
+                status, payload = await self._upload(f"/mg/restore/{conn_id}?{params}", upload, _uploaded)
             finally:
                 form.set_busy(False)
-            if not response.ok:
-                result_el.textContent = f"Refused: {payload.get('detail', response.status)}"
+            if status != 200 or not payload.get("job"):
+                result_el.textContent = f"Refused: {payload.get('detail') or payload.get('error') or status}"
                 return
-            lines = []
-            for item in payload.get("collections", []):
-                parts = [f"{item['inserted']:,} inserted"]
-                if item.get("replaced"):
-                    parts.append(f"{item['replaced']:,} replaced")
-                if item.get("skipped"):
-                    parts.append(f"{item['skipped']:,} skipped")
-                if item.get("indexes"):
-                    parts.append(f"{item['indexes']} index(es)")
-                lines.append(f"✓ {item['db']}.{item['collection']}: " + ", ".join(parts))
-                lines.extend(f"    ⚠ {error}" for error in item.get("errors", []))
-            lines.extend(f"– skipped {entry}" for entry in payload.get("skipped", []))
-            result_el.textContent = "\n".join(lines) or "The archive held no .bson files."
-            await self._refresh_server(conn_id)
+            # The upload is done; the restore now runs as a job with its own
+            # console, and this dialog has nothing more to show.
+            modal.close()
+            title = f"Restore {upload.name}" + (f" into {values.get('db').strip()}" if (values.get("db") or "").strip() else "")
+            await self._job_console(payload["job"], title, "restore", conn_id)
 
         form.on_submit(lambda values: _spawn(_restore(values), "restore"))
         modal.show()
+
+    async def _upload(self, url: str, body, on_progress) -> tuple:
+        """
+        POST a file with upload progress. XMLHttpRequest, not fetch: fetch
+        reports nothing while a request body is being sent. Returns
+        ``(status, parsed JSON or {})``; status 0 means the network failed.
+        """
+        future = asyncio.get_event_loop().create_future()
+        xhr = js.XMLHttpRequest.new()
+        xhr.open("POST", url)
+        xhr.withCredentials = True
+        xhr.setRequestHeader("X-CSRF-Token", _csrf_token())
+        xhr.setRequestHeader("Content-Type", "application/zip")
+
+        def _progress(event) -> None:
+            if event.lengthComputable:
+                on_progress(int(event.loaded), int(event.total))
+
+        def _settle(*_args) -> None:
+            if not future.done():
+                future.set_result(None)
+
+        proxies = [create_proxy(_progress), create_proxy(_settle)]
+        self._proxies.extend(proxies)
+        xhr.upload.addEventListener("progress", proxies[0])
+        for name in ("load", "error", "abort", "timeout"):
+            xhr.addEventListener(name, proxies[1])
+        xhr.send(body)
+        await future
+        try:
+            payload = json.loads(str(xhr.responseText or "{}"))
+        except ValueError:
+            payload = {}
+        return int(xhr.status), payload if isinstance(payload, dict) else {}
+
+    async def _start_dump(self, conn_id: int, db: str, coll: str) -> None:
+        result = await JobService().start_dump_async(conn_id, db, coll)
+        if not result.get("ok"):
+            self._toast(result.get("error", "Could not start the dump"))
+            return
+        title = f"Dump {db}.{coll}" if coll else f"Dump {db}"
+        await self._job_console(result["job"], title, "dump", conn_id)
+
+    async def _job_console(self, job_id: str, title: str, kind: str, conn_id: int) -> None:
+        """
+        Follow a job: a bar per collection, the log, Cancel, and at the end
+        the summary (and the download, for a dump). Closing the console does
+        not stop the job; a dump still downloads when it finishes.
+        """
+        modal = ModalWindow(ModalConfig(title=title, width=720, height=560))
+        modal.body.innerHTML = (
+            '<div class="mg-console">'
+            '<div class="mg-console-head"><span class="mg-console-state" data-state="running">'
+            '<span class="mdi mdi-progress-clock"></span><span>Running…</span></span>'
+            '<span class="mg-console-elapsed"></span></div>'
+            '<div class="mg-console-items"></div>'
+            '<pre class="mg-json mg-console-log"></pre>'
+            '<div class="mg-editor-actions">'
+            '<button type="button" class="mg-btn mg-danger" data-job="cancel">'
+            '<span class="mdi mdi-stop"></span><span>Cancel</span></button>'
+            '<button type="button" class="mg-btn mg-primary" data-job="download" hidden>'
+            '<span class="mdi mdi-download"></span><span>Download again</span></button>'
+            '<button type="button" class="mg-btn" data-job="close">Close</button>'
+            "</div></div>"
+        )
+        body = modal.body
+        items_el = body.querySelector(".mg-console-items")
+        log_el = body.querySelector(".mg-console-log")
+        state_el = body.querySelector(".mg-console-state")
+        cancel_el = body.querySelector('[data-job="cancel"]')
+        download_el = body.querySelector('[data-job="download"]')
+        download_url = f"/mg/jobs/{job_id}/download"
+
+        def _on_click(event) -> None:
+            which = event.target.closest("[data-job]")
+            if not which:
+                return
+            action = str(which.getAttribute("data-job"))
+            if action == "close":
+                modal.close()
+            elif action == "download":
+                _download(download_url)
+            elif action == "cancel" and not which.disabled:
+                which.disabled = True
+                _spawn(JobService().cancel_async(job_id), "cancel job")
+
+        proxy = create_proxy(_on_click)
+        self._proxies.append(proxy)
+        body.addEventListener("click", proxy)
+        modal.show()
+
+        def _amount(value, unit: str) -> str:
+            if value is None:
+                return "?"
+            return format_bytes(value) if unit == "bytes" else f"{int(value):,}"
+
+        def _render(status: dict) -> None:
+            rows = []
+            for item in status["items"]:
+                total, done, unit = item.get("total"), item.get("done") or 0, item.get("unit", "")
+                if total:
+                    percent = max(0, min(100, int(100 * done / total)))
+                    amount = f"{_amount(done, unit)} / {_amount(total, unit)}"
+                else:
+                    percent = 100 if item["state"] != "running" else 0
+                    amount = f"{_amount(done, unit)} {unit}"
+                rows.append(
+                    f'<div class="mg-console-item" data-state="{_esc(item["state"])}">'
+                    f'<span class="mg-console-label" title="{_esc(item["label"])}">{_esc(item["label"])}</span>'
+                    f'<span class="mg-console-track"><span class="mg-console-bar" style="width:{percent}%">'
+                    "</span></span>"
+                    f'<span class="mg-console-amount">{_esc(item.get("note") or amount)}</span>'
+                    "</div>"
+                )
+            items_el.innerHTML = "".join(rows) or '<div class="mg-hint">Starting…</div>'
+            for line in status["log"]:
+                log_el.textContent = str(log_el.textContent) + line + "\n"
+            log_el.scrollTop = log_el.scrollHeight
+            body.querySelector(".mg-console-elapsed").textContent = f"{status['elapsed']:.0f} s"
+            state = status["state"]
+            label = {
+                "running": "Cancelling…" if status.get("cancelling") else "Running…",
+                "done": "Done", "failed": f"Failed: {status.get('error', '')}",
+                "cancelled": "Cancelled — what finished is kept",
+            }.get(state, state)
+            icon = {"running": "mdi-progress-clock", "done": "mdi-check-circle",
+                    "failed": "mdi-alert-circle", "cancelled": "mdi-stop-circle"}.get(state, "mdi-circle")
+            state_el.dataset.state = state
+            state_el.innerHTML = f'<span class="mdi {icon}"></span><span>{_esc(label)}</span>'
+            cancel_el.hidden = state != "running"
+            download_el.hidden = not status.get("download")
+
+        seen = 0
+        while True:
+            status = await JobService().status_async(job_id, seen)
+            if not status.get("ok"):
+                state_el.dataset.state = "failed"
+                state_el.textContent = status.get("error", "The job is gone")
+                return
+            seen = status["log_total"]
+            _render(status)
+            if status["state"] != "running":
+                break
+            await asyncio.sleep(0.5)
+
+        if status["state"] == "done" and kind == "dump" and status.get("download"):
+            _download(download_url)
+            self._toast(f"{title}: done, downloading.")
+        elif status["state"] == "done":
+            self._toast(f"{title}: done.")
+        if kind == "restore":
+            await self._refresh_server(conn_id)
 
     # ------------------------------------------------------------------
     # Account dialogs
@@ -3402,6 +3539,9 @@ _CSS = """
 .mg-view{display:flex;flex-direction:column;height:100%;min-height:0;
   font:13px system-ui,sans-serif;color:var(--mg-text);container-type:inline-size;}
 .mg-view [hidden]{display:none !important;}
+/* .mg-btn is display:inline-flex, which beats the hidden attribute: without
+   this a "hidden" Cancel stayed on screen after the job finished. */
+.mg-btn[hidden],.mg-console [hidden]{display:none !important;}
 .mg-head{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:7px 12px;
   background:var(--mg-bg);border-bottom:1px solid var(--mg-line);color:var(--mg-muted);
   white-space:nowrap;overflow:hidden;}
@@ -3528,6 +3668,28 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .mg-split-top{flex:1 1 auto;min-height:0;border:1px solid var(--mg-line);border-radius:6px;overflow:hidden;}
 .mg-split-bottom{flex:1 1 auto;min-height:0;}
 .mg-split-bottom-auto{flex:0 0 auto;}
+.mg-console{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;}
+.mg-console-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.mg-console-state{display:inline-flex;align-items:center;gap:7px;font-weight:600;color:var(--mg-text);}
+.mg-console-state .mdi{font-size:18px;color:#94a3b8;}
+.mg-console-state[data-state="done"] .mdi{color:#34d399;}
+.mg-console-state[data-state="failed"]{color:#fca5a5;}
+.mg-console-state[data-state="failed"] .mdi{color:#f87171;}
+.mg-console-state[data-state="cancelled"] .mdi{color:#fbbf24;}
+.mg-console-elapsed{color:var(--mg-dim);font:12px ui-monospace,Menlo,Consolas,monospace;}
+.mg-console-items{display:flex;flex-direction:column;gap:6px;max-height:40%;overflow:auto;flex:0 0 auto;}
+.mg-console-item{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(80px,1fr) minmax(0,1.2fr);
+  align-items:center;gap:10px;font-size:12.5px;}
+.mg-console-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mg-text);
+  font-family:ui-monospace,Menlo,Consolas,monospace;}
+.mg-console-track{height:6px;border-radius:3px;background:#1e293b;overflow:hidden;}
+.mg-console-bar{display:block;height:100%;border-radius:3px;background:#38bdf8;transition:width .3s linear;}
+.mg-console-item[data-state="done"] .mg-console-bar{background:#34d399;}
+.mg-console-item[data-state="failed"] .mg-console-bar{background:#f87171;}
+.mg-console-item[data-state="cancelled"] .mg-console-bar{background:#fbbf24;}
+.mg-console-amount{color:var(--mg-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font:12px ui-monospace,Menlo,Consolas,monospace;}
+.mg-console-log{flex:1 1 auto;min-height:80px;}
 .mg-plan{padding:10px 12px;border-radius:6px;background:#0b1f1a;border:1px solid #065f46;
   display:flex;flex-direction:column;gap:6px;}
 .mg-plan[data-strategy="drop-then-build"]{background:#2a1d06;border-color:#92400e;}

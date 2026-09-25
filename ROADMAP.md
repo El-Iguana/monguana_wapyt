@@ -12,7 +12,7 @@ PRs or other branches). Numbering continues from the original's.
 | 10: Visual query builder | Builder panel with typed values (phase 33) | — |
 | 11: Pipeline builder | Stage cards + Raw, with Run to here (phase 34) | — |
 | 24: Column width/order memory | Resize and reorder, saved per user on the server (phase 35) | — |
-| 13/16: Dump/restore progress console | Summary when it finishes | No live progress |
+| 13/16: Dump/restore progress console | Jobs with a progress console and Cancel (phase 36) | — |
 | Small items | | View mode not remembered; `system.*` collections always listed |
 
 ## Phase 31: code-editor spike — done (2026-09-25)
@@ -133,13 +133,23 @@ set of create options. See CLAUDE.md, *Index CRUD*.
     validates arguments against annotations, and `None` is not a `dict`.
     Deleting is its own `clear(key)`.
 
-## Phase 36: dump/restore progress (original phases 13/16)
+## Phase 36: dump/restore progress (original phases 13/16) — done (2026-09-25)
 
-- pytincture cuts off streamed BFF responses after 300 s, so this is a
-  background job the page polls about once a second, as IguanaXterm's
-  server-side downloads do.
-- A console with per-collection progress, Cancel, and the final summary.
-- Restore keeps uploading the ZIP as it does now, then follows the job.
+- Dump and restore run as **background jobs** (`services/jobs.py`, a plain
+  module; `JobService` to start a dump and to poll or cancel). The page polls
+  twice a second — not a `@bff_stream`, which pytincture cuts off at 300 s.
+- A **console** shows a bar per collection (documents for a dump, bytes read
+  for a restore), the log, **Cancel** (cooperative, between batches; what
+  finished is kept), the final summary, and for a dump the download, which
+  starts by itself and can be repeated for an hour. Closing the console does
+  not stop the job.
+- The restore **upload shows its own progress** (XHR upload events — `fetch`
+  reports nothing while sending a body); the job starts once it lands.
+- Verified in Chromium on 400,000 documents: the bar at 60% mid-dump, then
+  Cancel → cancelled, the partial file deleted, no errors.
+- **Bug found by the smoke test:** the console's Cancel stayed visible after
+  the job ended — `.mg-btn`'s `display:inline-flex` beats the `hidden`
+  attribute (IguanaXterm's trap). `.mg-btn[hidden]` now hides.
 
 ## Phase 37: small items
 
@@ -153,4 +163,5 @@ set of create options. See CLAUDE.md, *Index CRUD*.
 
 ## Order
 
-31–35 are done; 36 (dump/restore progress) next.
+31–36 are done: every gap from the original is closed. Phase 37's small items
+remain.

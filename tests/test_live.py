@@ -331,3 +331,71 @@ def test_unchanged_definitions_are_not_changes(env):
 
     refused = mongo.create_index(conn, DB, "idx", "{z: 1}", "", options="{storageEngine: {}}")
     assert not refused["ok"] and "not supported" in refused["error"]
+
+
+# -- dump and restore jobs (phase 36) ------------------------------------------
+
+def _wait(service, job_id, timeout=30.0):
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = ok(service.status(job_id))
+        if status["state"] != "running":
+            return status
+        time.sleep(0.05)
+    raise AssertionError("job did not finish")
+
+
+def test_dump_job_reports_progress_and_produces_the_zip(env):
+    from services import jobs
+    from services.job_service import JobService
+
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.insert(conn, DB, "bulk", "[" + ",".join(f"{{i: {i}}}" for i in range(1200)) + "]"))
+    service = JobService(env["user"])
+    started = ok(service.start_dump(conn, DB, "bulk"))
+    status = _wait(service, started["job"])
+    assert status["state"] == "done" and status["download"] is True
+    item = status["items"][0]
+    assert (item["label"], item["done"], item["total"], item["state"]) == (f"{DB}.bulk", 1200, 1200, "done")
+    assert any("1,200 documents" in line for line in status["log"])
+    job = jobs.get(started["job"], 1)
+    with zipfile.ZipFile(job.path) as archive:
+        assert f"{DB}/bulk.bson" in archive.namelist()
+    assert not JobService({"user_id": 999}).status(started["job"])["ok"], "per user"
+
+
+def test_restore_job_progress_and_cancel(env):
+    import bson
+
+    from services import jobs
+    from services.mongo_pool import pool
+    from services.transfer import restore_archive
+
+    client = pool.client(1, env["conn"])
+    target = f"{DB}_jobs"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("src/big.bson", b"".join(bson.encode({"_id": i}) for i in range(3500)))
+    data = buffer.getvalue()
+    try:
+        job = jobs.start(1, "restore", "t",
+                         lambda progress: restore_archive(client, io.BytesIO(data), "skip", target, progress))
+        from services.job_service import JobService
+
+        status = _wait(JobService(env["user"]), job.id)
+        item = status["items"][0]
+        assert item["state"] == "done" and item["done"] == item["total"] > 0
+        assert "3,500 documents" in item["note"] or "3,500 inserted" in item["note"]
+        assert status["result"]["collections"][0]["inserted"] == 3500
+
+        # Cancelled before it starts: stops at the first batch, keeps what it did.
+        client.drop_database(target)
+        cancel_now = jobs.Progress(None)
+        cancel_now.check = lambda: (_ for _ in ()).throw(jobs.Cancelled())
+        with pytest.raises(jobs.Cancelled):
+            restore_archive(client, io.BytesIO(data), "skip", target, cancel_now)
+        assert client[target]["big"].count_documents({}) == 1000
+    finally:
+        client.drop_database(target)
