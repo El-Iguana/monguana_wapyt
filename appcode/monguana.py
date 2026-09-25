@@ -53,10 +53,12 @@ from wapyt import (
 
 from services.connection_service import ConnectionService
 from services.docfmt import (
+    apply_column_state,
     cell_text,
     compact,
     count_nodes,
     format_bytes,
+    merge_column_state,
     page_summary,
     scalar_text,
     tagged_type,
@@ -75,6 +77,7 @@ from services.querybuilder import (
     default_type,
     operators_for,
 )
+from services.ui_state_service import UiStateService
 from services.user_service import UserService
 
 # pytincture resolves the browser entrypoint by AST, and its MainWindow
@@ -1408,6 +1411,7 @@ class Monguana(MainWindow):
         _spawn(self._load_head_stats(tid), "head stats")
         _spawn(self._attach_view_editors(tid), "query editors")
         _spawn(self._sample_fields(tid), "field sample")
+        _spawn(self._load_columns(tid), "column layout")
         return tid
 
     def _view_html(self, tid: str, conn_name: str, db: str, coll: str, kind: str) -> str:
@@ -1505,6 +1509,9 @@ class Monguana(MainWindow):
         <span class="mdi mdi-table"></span></button>
       <button type="button" class="mg-seg-btn" data-mg="view" data-view="json" aria-pressed="false" title="JSON">
         <span class="mdi mdi-code-json"></span></button>
+      <button type="button" class="mg-seg-btn" data-mg="reset_columns"
+        title="Reset column widths and order for this collection">
+        <span class="mdi mdi-table-column-width"></span></button>
       <button type="button" class="mg-seg-btn" data-mg="view" data-view="tree" aria-pressed="false" title="Tree">
         <span class="mdi mdi-file-tree"></span></button>
     </span>
@@ -1533,6 +1540,9 @@ class Monguana(MainWindow):
                 columns=[ColumnConfig(id="_id", header="_id")],
                 id_field=_ROW_KEY,
                 selection="multi",
+                # Widths and order persist per collection (phase 35).
+                resizable_columns=True,
+                reorderable_columns=True,
                 filterable=False,
                 empty_text="No documents",
                 loading_text="Running…",
@@ -1550,6 +1560,7 @@ class Monguana(MainWindow):
         table.on_activate(lambda payload: self._row_edit(tid, payload))
         table.on_action(lambda payload: self._row_action(tid, payload))
         table.on_sort(lambda payload: self._on_table_sort(tid, payload))
+        table.on_columns(lambda payload: self._on_columns(tid, payload))
         return table
 
     def _on_tab_close(self, payload) -> None:
@@ -1686,6 +1697,8 @@ class Monguana(MainWindow):
             self._goto_page(tid, view["page"] + 1)
         elif action == "last":
             self._goto_page(tid, self._page_count(view))
+        elif action == "reset_columns":
+            _spawn(self._reset_columns(tid), "reset columns")
         elif action == "view":
             self._show_as(tid, str(button.dataset.view))
         elif action == "insert":
@@ -2463,15 +2476,19 @@ class Monguana(MainWindow):
     def _render_table(self, tid: str) -> None:
         view = self._views[tid]
         docs = [row["doc"] for row in view["docs"]]
-        columns = union_columns(docs)
+        keys = union_columns(docs)
+        # The saved layout is for this collection's documents; aggregation
+        # output has its own shape and is laid out fresh.
+        saved = view.get("columns") if view["mode"] == "find" else None
+        layout = apply_column_state(keys, saved, {"_id": 230})
+        columns = [key for key, _width in layout]
         view["table"].set_columns([
             ColumnConfig(
-                id=key, header=key, sort_by=_RANK_KEY,
-                width=230 if key == "_id" else None,
+                id=key, header=key, sort_by=_RANK_KEY, width=width,
                 # A header click re-sorts on the server; see _on_table_sort.
                 sortable=view["mode"] == "find",
             )
-            for key in columns
+            for key, width in layout
         ] or [ColumnConfig(id="_id", header="_id")])
 
         # Every column sorts by rank, i.e. by the server's order. The table
@@ -2571,6 +2588,54 @@ class Monguana(MainWindow):
                 f"{result['count']:,} docs · {format_bytes(result['size'])} · "
                 f"{len(result['index_sizes'])} index(es)"
             )
+
+    # -- column layout (ROADMAP phase 35) ---------------------------------
+
+    @staticmethod
+    def _columns_key(view: dict) -> str:
+        return f"columns:{view['conn']}:{view['db']}:{view['coll']}"
+
+    async def _load_columns(self, tid: str) -> None:
+        view = self._views.get(tid)
+        if view is None:
+            return
+        result = await UiStateService().get_async(self._columns_key(view))
+        if tid not in self._views or not result.get("ok") or not result.get("value"):
+            return
+        view["columns"] = result["value"]
+        if view["docs"] and view["shown"] == "table" and view["mode"] == "find":
+            self._render_table(tid)
+
+    def _on_columns(self, tid: str, payload: dict) -> None:
+        """A column was resized or moved: remember it, saved after a pause."""
+        view = self._views.get(tid)
+        if view is None or view["mode"] != "find":
+            return
+        view["columns"] = merge_column_state(view.get("columns"), payload.get("columns") or [])
+        view["columns_gen"] = view.get("columns_gen", 0) + 1
+        _spawn(self._save_columns(tid, view["columns_gen"]), "save column layout")
+
+    async def _save_columns(self, tid: str, generation: int) -> None:
+        # One save per burst of changes, not one per dragged header.
+        await asyncio.sleep(0.4)
+        view = self._views.get(tid)
+        if view is None or view.get("columns_gen") != generation:
+            return
+        result = await UiStateService().set_async(self._columns_key(view), view["columns"])
+        if not result.get("ok"):
+            js.console.warn(f"[monguana] column layout not saved: {result.get('error')}")
+
+    async def _reset_columns(self, tid: str) -> None:
+        view = self._views[tid]
+        view["columns"] = None
+        view["columns_gen"] = view.get("columns_gen", 0) + 1
+        result = await UiStateService().clear_async(self._columns_key(view))
+        if not result.get("ok"):
+            self._toast(result.get("error", "Could not reset the columns"))
+            return
+        if view["shown"] == "table":
+            self._render_table(tid)
+        self._toast("Column widths and order reset.")
 
     # -- documents -------------------------------------------------------
 

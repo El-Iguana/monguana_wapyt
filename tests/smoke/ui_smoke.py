@@ -168,6 +168,29 @@ def main() -> int:
         view.locator("[data-mg=first]").click()
         page.wait_for_timeout(1000)
 
+        step("columns: resize by dragging an edge, reorder by dragging a header (phase 35)")
+        def header_order(scope):
+            return scope.locator("thead th[data-column-id]").evaluate_all(
+                "els => els.map(e => e.dataset.columnId)")
+
+        status_th = view.locator("th[data-column-id='status']")
+        before_width = status_th.bounding_box()["width"]
+        grip = status_th.locator(".wapyt-datatable-resizer").bounding_box()
+        page.mouse.move(grip["x"] + grip["width"] / 2, grip["y"] + grip["height"] / 2)
+        page.mouse.down()
+        page.mouse.move(grip["x"] + 60, grip["y"] + grip["height"] / 2, steps=6)
+        page.mouse.move(grip["x"] + 95, grip["y"] + grip["height"] / 2, steps=6)
+        page.mouse.up()
+        resized_width = status_th.bounding_box()["width"]
+        assert abs(resized_width - (before_width + 95)) <= 4, (before_width, resized_width)
+        # The drag must not have sorted by status.
+        assert view.locator(f"#{tid}-sort").input_value() == '{"number": -1}'
+        view.locator("th[data-column-id='total']").drag_to(
+            view.locator("th[data-column-id='number']"), target_position={"x": 4, "y": 10})
+        order = header_order(view)
+        assert order.index("total") < order.index("number"), order
+        page.wait_for_timeout(900)  # the save is debounced
+
         step("JSON and tree views")
         view.locator("[data-mg=view][data-view=json]").click()
         json_text = view.locator(f"#{tid}-json").inner_text()
@@ -429,6 +452,27 @@ def main() -> int:
 
         violations = page.evaluate("window.__csp")
         problems.extend(f"CSP: {item}" for item in violations)
+
+        step("the column layout comes back on a fresh page, and resets")
+        again = context.new_page()
+        again.on("pageerror", lambda exc: problems.append(f"layout pageerror: {exc}"))
+        again.goto(APP, wait_until="domcontentloaded", timeout=30000)
+        again.wait_for_selector(".mg-toolbar", timeout=180000)
+        again.locator(f".wapyt-tree-row:has-text('{PROFILE}')").first.click()
+        again.locator(".wapyt-tree-row[data-node-id$=':shop']").first.click()
+        again.locator(".wapyt-tree-row[data-node-id$=':shop:orders']").first.dblclick()
+        reopened = again.locator(".mg-view").last
+        expect(reopened.locator(".wapyt-datatable-table tbody tr[data-row-id]")).to_have_count(50, timeout=20000)
+        again.wait_for_timeout(800)  # the layout loads alongside the first page
+        order = header_order(reopened)
+        assert order.index("total") < order.index("number"), order
+        restored = reopened.locator("th[data-column-id='status']").bounding_box()["width"]
+        assert abs(restored - resized_width) <= 4, (restored, resized_width)
+        reopened.locator("[data-mg=reset_columns]").click()
+        expect(again.locator("#mg-toast")).to_have_text("Column widths and order reset.", timeout=10000)
+        order = header_order(reopened)
+        assert order.index("number") < order.index("total"), order
+        again.close()
 
         step("without the editor bundle, the plain text box still works")
         fallback = context.new_page()

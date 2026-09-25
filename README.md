@@ -29,7 +29,9 @@ its own query, page and view.
 
 - **Table, JSON and tree views.** The table's columns are the union of every
   document on the page; a header click sorts on the server, not just the page
-  on screen. The tree view caps its depth and size and says when it does.
+  on screen. Drag a column's edge to resize it or its header to move it; the
+  layout is remembered per collection, for you, on any browser. The tree view
+  caps its depth and size and says when it does.
 - **A code editor in every query box and the document editor** (CodeMirror 6,
   bundled — no CDN): highlighting, bracket matching, and completions for
   operators, BSON helpers and the collection's field paths.

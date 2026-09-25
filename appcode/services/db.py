@@ -164,6 +164,17 @@ CREATE TABLE IF NOT EXISTS connections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_connections_user ON connections(user_id);
+
+-- Per-user UI state that should follow the person, not the browser: column
+-- widths and order per collection, for now. Opaque JSON; the shape belongs to
+-- the UI.
+CREATE TABLE IF NOT EXISTS ui_state (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key        TEXT    NOT NULL,
+    payload    TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, key)
+);
 """
 
 
