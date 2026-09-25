@@ -1,0 +1,18 @@
+{
+  "name": "monguana-editor",
+  "private": true,
+  "description": "Builds appcode/vendor/codemirror/monguana-editor.js. See build.sh.",
+  "license": "MIT",
+  "dependencies": {
+    "@codemirror/autocomplete": "6.20.3",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.13",
+    "@lezer/highlight": "1.2.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

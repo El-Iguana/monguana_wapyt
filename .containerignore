@@ -11,3 +11,4 @@ session.key
 tests/
 .pytest_cache/
 data/
+tools/
