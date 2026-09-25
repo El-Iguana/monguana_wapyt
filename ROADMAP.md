@@ -9,7 +9,7 @@ PRs or other branches). Numbering continues from the original's.
 | Original phase | In the rewrite now | Gap |
 |---|---|---|
 | 6: Monaco + autocomplete | CodeMirror in every query box and the document editor, with field completions (phases 31–32) | — |
-| 10: Visual query builder | Nothing | Missing |
+| 10: Visual query builder | Builder panel with typed values (phase 33) | — |
 | 11: Pipeline builder | One text box + stage templates | No per-stage list with move, enable/disable, remove |
 | 24: Column width/order memory | Nothing | wapyt's DataTable cannot resize or reorder columns |
 | 13/16: Dump/restore progress console | Summary when it finishes | No live progress |
@@ -67,16 +67,25 @@ set of create options. See CLAUDE.md, *Index CRUD*.
   highest precedence (at normal precedence the completion keymap closed the
   list first and the guard saw nothing to do).
 
-## Phase 33: visual query builder (original phase 10)
+## Phase 33: visual query builder (original phase 10) — done (2026-09-25)
 
-- Rows of field / operator / value, joined by AND or OR, producing filter text
-  in shell syntax.
-- Generation lives in `services/querybuilder.py`, plain Python shared by the
-  browser and the unit tests.
-- Fixes two bugs in the original's builder: it chose operators by Python type
-  names such as `str`, which never matched most fields, and coerced every
-  value to a number or string, so an ObjectId or a date became a string. Adds
-  `$in`, `$exists` and `$regex`.
+- A **Builder** panel in each view: rows of field (sampled paths offered as
+  suggestions), operator, value type and value; AND/OR; a live preview of the
+  filter; **Apply** writes it into the filter editor (Ctrl+Z undoes) and runs.
+- Generation is `services/querybuilder.py`, pure Python shared by the browser
+  and `tests/test_querybuilder.py`, which proves each output by parsing it with
+  the server's `mql`.
+- **Values are written as their type**, defaulting to the field's sampled
+  type: String, Number, Decimal, Date, ObjectId, Boolean, UUID, Null, or Raw
+  (any shell literal as typed). A value that is not what its type says is
+  refused with the row number. This fixes the original's guessing, which made
+  `"02134"` a number and an ObjectId or a date a string.
+- Operators fit the type: `=, ≠, >, ≥, <, ≤, in, not in, matches` (strings),
+  `exists`, `is of type`, and `array size` for fields sampled as arrays.
+- AND merges conditions on one field (`{age: {$gte: 18, $lt: 65}}`) and only
+  falls back to `$and` when two would collide; OR is `$or`.
+- Not done: reading an existing filter back into rows. Apply replaces the
+  filter.
 
 ## Phase 34: pipeline stage list (original phase 11)
 
@@ -112,5 +121,5 @@ set of create options. See CLAUDE.md, *Index CRUD*.
 
 ## Order
 
-31 and 32 are done; 33 next. 33 and 34 can use `_mount_editor` for their value
-and stage boxes.
+31–33 are done; 34 (pipeline stage list) next. It can use `_mount_editor` for
+each stage's editor.

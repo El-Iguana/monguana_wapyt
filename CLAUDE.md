@@ -35,6 +35,7 @@ appcode/                    # pytincture modules_path
     db.py                   #   SQLite: users, connections; Fernet; bcrypt
     mql.py                  #   shell-syntax parser + query safety   (server only)
     docfmt.py               #   display helpers                      (BOTH sides)
+    querybuilder.py         #   visual query builder -> filter text  (BOTH sides)
     mongo_pool.py           #   MongoClient pool — plain module, NOT a BFF
     connection_service.py   #   BFF: profiles, test, connect/disconnect
     mongo_service.py        #   BFF: databases, collections, documents, indexes…
@@ -253,6 +254,22 @@ Traps found building it, both pinned by `tests/test_live.py`:
   A stored collation is shown fully expanded by the server — verbose, exact,
   and round-trips.
 
+### The visual query builder (ROADMAP phase 33)
+
+`querybuilder.build_filter(rows, logic)` turns `{field, op, type, value}` rows
+into shell-syntax text; the view's **Builder** panel (`_qb_*` in
+`monguana.py`) keeps the rows in `view["builder"]`.
+
+- Every row carries an explicit **value type**, defaulting to the field's
+  sampled type (`default_type`), and `type_set` records that the person chose
+  one so picking a field does not overwrite it.
+- **Redraw a row, never the panel, on `change`.** A text box's `change` fires
+  on blur — on the way to clicking Apply — and redrawing the panel then
+  replaced the button mid-click. `_qb_read` swaps the one row and puts focus
+  back on the same control; value edits only update the preview.
+- Apply goes through `_set_text`, so it lands in the filter editor's undo
+  history.
+
 ### The code editor (ROADMAP phase 31)
 
 CodeMirror 6, bundled by `tools/codemirror/build.sh` into one classic script
@@ -291,11 +308,10 @@ in the background (`_sample_fields`) so completions offer field paths at once.
 
 See ROADMAP.md for the plan. In short:
 
-1. **Visual query builder** (field/operator/value rows generating the filter).
-2. **Pipeline stage list** — add/reorder/toggle stages individually. Today:
+1. **Pipeline stage list** — add/reorder/toggle stages individually. Today:
    one textarea plus stage templates.
-3. **Column width/order persistence** per collection.
-4. **Dump/restore progress console.** Restore returns a per-collection summary
+2. **Column width/order persistence** per collection.
+3. **Dump/restore progress console.** Restore returns a per-collection summary
    when done; no live progress.
 
 ## Conventions
