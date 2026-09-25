@@ -65,6 +65,8 @@ from services.docfmt import (
     union_columns,
 )
 from services.mongo_service import MongoService
+from services.pipeline_text import PipelineTextError, compose as compose_pipeline
+from services.pipeline_text import join as join_pipeline, split as split_pipeline
 from services.querybuilder import (
     OPERATORS as QB_OPERATORS,
     VALUE_TYPES as QB_TYPES,
@@ -126,6 +128,14 @@ _STAGE_TEMPLATES = (
     ("$facet", '{$facet: {\n  first: [{$limit: 5}]\n}}'),
 )
 
+# Every stage the server's read-only allowlist accepts, for a card's selector:
+# the templates first, then the rest.
+_STAGE_OPS = tuple(name for name, _ in _STAGE_TEMPLATES) + (
+    "$set", "$unset", "$replaceRoot", "$replaceWith", "$sample", "$bucket",
+    "$bucketAuto", "$graphLookup", "$unionWith", "$redact", "$setWindowFields",
+    "$densify", "$fill", "$geoNear",
+)
+
 _TOOLBAR_BUTTONS = (
     ("new_conn", "New connection", "mdi-plus-circle"),
     ("edit_conn", "Edit", "mdi-pencil"),
@@ -179,6 +189,16 @@ def _spawn(coro, label: str):
             _report(label)
 
     return asyncio.ensure_future(_guarded())
+
+
+def _role(element) -> str:
+    """
+    An element's ``data-role``, or "". Not ``element.dataset.role``: in Pyodide
+    a missing JS property raises AttributeError where JS would give
+    ``undefined`` — a plain stage box (no role) crashed the change handler.
+    """
+    value = element.getAttribute("data-role") if hasattr(element, "getAttribute") else None
+    return str(value) if value else ""
 
 
 def _el(element_id: str):
@@ -390,9 +410,17 @@ class Monguana(MainWindow):
             self._on_view_action(tid, str(button.dataset.mg), button)
 
     def _on_input(self, event) -> None:
-        """Typing in a builder row: keep its state and the preview current."""
+        """Typing in a builder row or a plain stage box: keep state current."""
         target = event.target
-        if not target or not hasattr(target, "closest") or not target.closest("[data-qb]"):
+        if not target or not hasattr(target, "closest"):
+            return
+        if target.hasAttribute("data-stage-body"):
+            view_el = target.closest(".mg-view")
+            if view_el and str(view_el.dataset.tab) in self._views:
+                self._stage_set(str(view_el.dataset.tab), int(target.getAttribute("data-stage-body")),
+                                body=str(target.value), rerender=False)
+            return
+        if not target.closest("[data-qb]"):
             return
         view_el = target.closest(".mg-view")
         if view_el and str(view_el.dataset.tab) in self._views:
@@ -409,12 +437,15 @@ class Monguana(MainWindow):
         view = self._views.get(tid)
         if view is None:
             return
+        if target.hasAttribute("data-stage-op"):
+            self._stage_set(tid, int(target.getAttribute("data-stage-op")), op=str(target.value))
+            return
         if target.closest("[data-qb]"):
             # A field chosen, or an operator or type changed: the row's
             # choices may change with it, so it is drawn again.
             self._qb_read(tid, target, rerender=True)
             return
-        role = str(target.dataset.role or "")
+        role = _role(target)
         if role == "mode":
             self._apply_mode(tid, str(target.value))
         elif role == "size":
@@ -453,7 +484,7 @@ class Monguana(MainWindow):
                     self._views[tid]["page"] = 1
                     _spawn(self._run(tid), "run")
                 return
-            if key == "Enter" and str(target.dataset.role or "") == "page":
+            if key == "Enter" and _role(target) == "page":
                 event.preventDefault()
                 self._goto_page(tid, str(target.value))
                 return
@@ -463,7 +494,7 @@ class Monguana(MainWindow):
                 self._qb_action(tid, "qb_apply", target)
                 return
             # A one-line filter box: Enter runs, Shift+Enter adds a line.
-            if key == "Enter" and not event.shiftKey and str(target.dataset.role or "") in (
+            if key == "Enter" and not event.shiftKey and _role(target) in (
                 "filter", "sort", "projection"
             ):
                 event.preventDefault()
@@ -1366,6 +1397,9 @@ class Monguana(MainWindow):
             "table": None, "tree": None, "schema": None, "tsort": None,
             "syncing_sort": False, "busy": False,
             "builder": {"logic": "and", "rows": [self._qb_blank()]},
+            # The pipeline as cards (phase 34); the raw text stays the source
+            # of truth and is rewritten from these on every change.
+            "pl_mode": "stages", "stages": [], "stage_counter": 0,
         }
         self._views[tid] = view
         view["table"] = self._make_table(tid)
@@ -1437,9 +1471,16 @@ class Monguana(MainWindow):
       <label class="mg-check"><input type="checkbox" id="{tid}-upsert"> upsert</label>
     </div>
     <div class="mg-qrow" data-for="aggregate" hidden>
-      <select class="mg-select" data-role="stage" title="Insert a stage template">{stages}</select>
+      <span class="mg-seg" role="group" aria-label="Pipeline editor">
+        <button type="button" class="mg-seg-btn mg-seg-text" data-mg="pl_mode" data-plmode="stages"
+          aria-pressed="true" title="One card per stage">Stages</button>
+        <button type="button" class="mg-seg-btn mg-seg-text" data-mg="pl_mode" data-plmode="raw"
+          aria-pressed="false" title="The whole pipeline as text">Raw</button>
+      </span>
+      <select class="mg-select" data-role="stage" title="Add a stage">{stages}</select>
       <span class="mg-hint">Read-only: $out and $merge are refused. Results are capped at 1,000.</span>
     </div>
+    <div class="mg-stages" id="{tid}-stages" hidden></div>
     <div class="mg-builder" id="{tid}-builder" hidden></div>
   </div>
   <div class="mg-bar">
@@ -1550,7 +1591,11 @@ class Monguana(MainWindow):
                 or (which == "aggregate" and mode == "aggregate")
             )
         self._set_hidden(f"{tid}-filter", mode == "aggregate")
-        self._set_hidden(f"{tid}-pipeline", mode != "aggregate")
+        stages_mode = view["pl_mode"] == "stages"
+        self._set_hidden(f"{tid}-pipeline", mode != "aggregate" or stages_mode)
+        _el(f"{tid}-stages").hidden = mode != "aggregate" or not stages_mode
+        if mode == "aggregate" and stages_mode:
+            self._stages_from_text(tid, quiet=True)
         run = root.querySelector('[data-mg="run"] span:not(.mdi)')
         run.textContent = {
             "find": "Run", "aggregate": "Run",
@@ -1562,6 +1607,9 @@ class Monguana(MainWindow):
             button.disabled = mode == "aggregate"
 
     def _insert_stage(self, tid: str, name: str) -> None:
+        if self._views[tid]["pl_mode"] == "stages":
+            self._stage_add(tid, name)
+            return
         template = dict(_STAGE_TEMPLATES).get(name)
         field = _el(f"{tid}-pipeline")
         if not template or not field:
@@ -1615,11 +1663,18 @@ class Monguana(MainWindow):
             _spawn(self._fields_dialog(tid), "fields")
         elif action == "builder":
             self._qb_toggle(tid)
+        elif action == "pl_mode":
+            self._pipeline_mode(tid, str(button.dataset.plmode))
+        elif action.startswith("st_"):
+            self._stage_action(tid, action, int(button.getAttribute("data-stage")))
         elif action.startswith("qb_"):
             self._qb_action(tid, action, button)
         elif action == "reset":
             for suffix in ("filter", "sort", "projection", "update", "pipeline"):
                 self._set_text(f"{tid}-{suffix}", "")
+            view["stages"] = []
+            if not _el(f"{tid}-stages").hidden:
+                self._render_stages(tid)
             view["page"] = 1
             self._status(tid)
             _spawn(self._run(tid), "reset")
@@ -1729,7 +1784,7 @@ class Monguana(MainWindow):
     )
 
     def _mount_editor(self, area, *, role: str, multiline: bool, on_run=None,
-                      on_save=None, max_height: str | None = None,
+                      on_save=None, on_change=None, max_height: str | None = None,
                       height: str | None = None, fill: bool = False,
                       fields=None) -> dict:
         """
@@ -1746,6 +1801,8 @@ class Monguana(MainWindow):
 
         def _on_change(text) -> None:
             area.value = str(text)
+            if on_change:
+                on_change(str(text))
 
         def _call(handler):
             return lambda *_args: handler() if handler else None
@@ -2001,7 +2058,8 @@ class Monguana(MainWindow):
             # mid-click (a field's change fires on blur, i.e. on the way to
             # Apply). Focus stays on the same control of the new row.
             active = js.document.activeElement
-            focused = str(active.dataset.qb) if active and row_el.contains(active) else ""
+            focused = (str(active.getAttribute("data-qb") or "")
+                       if active and row_el.contains(active) else "")
             holder = js.document.createElement("div")
             holder.innerHTML = self._qb_row_html(tid, index, row)
             fresh = holder.firstElementChild
@@ -2046,6 +2104,180 @@ class Monguana(MainWindow):
             view["page"] = 1
             _spawn(self._run(tid), "builder apply")
 
+    # -- the pipeline stage list (ROADMAP phase 34) -------------------------
+
+    def _editor_available(self) -> bool:
+        ready = self._editor_ready
+        return bool(ready is not None and ready.done() and not ready.cancelled()
+                    and not ready.exception() and ready.result())
+
+    def _pipeline_mode(self, tid: str, mode: str) -> None:
+        """Switch between the stage cards and the raw text."""
+        view = self._views[tid]
+        if mode == view["pl_mode"]:
+            return
+        if mode == "stages" and not self._stages_from_text(tid):
+            return  # the raw text does not split; stay on it, the status says why
+        if mode == "stages":
+            self._status(tid)  # clear an earlier "cannot be shown as stages"
+        view["pl_mode"] = mode
+        root = js.document.querySelector(f'.mg-view[data-tab="{tid}"]')
+        for button in root.querySelectorAll('[data-mg="pl_mode"]'):
+            button.setAttribute("aria-pressed", "true" if button.dataset.plmode == mode else "false")
+        self._apply_mode(tid, view["mode"])
+        if mode == "raw":
+            self._focus_field(f"{tid}-pipeline")
+
+    def _stages_from_text(self, tid: str, quiet: bool = False) -> bool:
+        """Cards from the raw text. False (and a status) when it does not split."""
+        view = self._views[tid]
+        text = str(_el(f"{tid}-pipeline").value)
+        try:
+            parsed = split_pipeline(text)
+        except PipelineTextError as exc:
+            if not quiet:
+                self._status(tid, f"The pipeline text cannot be shown as stages: {exc}")
+            return False
+        current = [{k: stage[k] for k in ("op", "body", "enabled")} for stage in view["stages"]]
+        if parsed != current:
+            view["stages"] = []
+            for stage in parsed:
+                view["stage_counter"] += 1
+                view["stages"].append({"id": view["stage_counter"], **stage})
+        self._render_stages(tid)
+        return True
+
+    def _stages_to_text(self, tid: str) -> None:
+        """Rewrite the raw text (what Run sends) from the cards."""
+        view = self._views[tid]
+        try:
+            text = join_pipeline(view["stages"])
+        except PipelineTextError as exc:
+            self._status(tid, str(exc))
+            return
+        self._set_text(f"{tid}-pipeline", "" if text == "[]" else text)
+
+    def _stage_index(self, tid: str, stage_id: int) -> int:
+        stages = self._views[tid]["stages"]
+        return next((i for i, stage in enumerate(stages) if stage["id"] == stage_id), -1)
+
+    def _stage_add(self, tid: str, op: str) -> None:
+        view = self._views[tid]
+        template = dict(_STAGE_TEMPLATES).get(op)
+        body = split_pipeline(template)[0]["body"] if template else "{}"
+        view["stage_counter"] += 1
+        view["stages"].append({"id": view["stage_counter"], "op": op, "body": body, "enabled": True})
+        self._stages_to_text(tid)
+        self._render_stages(tid, focus=view["stage_counter"])
+
+    def _stage_set(self, tid: str, stage_id: int, *, op: str | None = None,
+                   body: str | None = None, rerender: bool = True) -> None:
+        index = self._stage_index(tid, stage_id)
+        if index < 0:
+            return
+        stage = self._views[tid]["stages"][index]
+        if op is not None:
+            stage["op"] = op
+        if body is not None:
+            stage["body"] = body
+        self._stages_to_text(tid)
+        if rerender and op is not None:
+            self._render_stages(tid)
+
+    def _stage_action(self, tid: str, action: str, stage_id: int) -> None:
+        view = self._views[tid]
+        stages = view["stages"]
+        index = self._stage_index(tid, stage_id)
+        if index < 0:
+            return
+        if action == "st_run":
+            stage = stages[index]
+            if not stage["enabled"]:
+                self._toast("That stage is disabled; enable it to run up to it.")
+                return
+            label = f"After stage {index + 1} ({stage['op']})"
+            _spawn(self._aggregate(tid, compose_pipeline(stages, upto=index), label), "run to stage")
+            return
+        if action in ("st_up", "st_down"):
+            other = index - 1 if action == "st_up" else index + 1
+            if not 0 <= other < len(stages):
+                return
+            stages[index], stages[other] = stages[other], stages[index]
+        elif action == "st_toggle":
+            stages[index]["enabled"] = not stages[index]["enabled"]
+        elif action == "st_remove":
+            stages.pop(index)
+        self._stages_to_text(tid)
+        self._render_stages(tid)
+
+    def _render_stages(self, tid: str, focus: int | None = None) -> None:
+        """
+        Draw the cards. Their editors are rebuilt each time (moving a card
+        moves its text, not its CodeMirror instance), so the old ones are
+        destroyed first.
+        """
+        view = self._views[tid]
+        for element_id in [key for key in self._editors if key.startswith(f"{tid}-stage-")]:
+            self._editors.pop(element_id)["editor"].destroy()
+        host = _el(f"{tid}-stages")
+        stages = view["stages"]
+        if not stages:
+            host.innerHTML = ('<div class="mg-hint mg-stages-empty">No stages yet. Add one with '
+                              "“+ stage”, or switch to Raw to paste a pipeline.</div>")
+            return
+        cards = []
+        for number, stage in enumerate(stages, start=1):
+            sid = stage["id"]
+            ops = list(_STAGE_OPS) if stage["op"] in _STAGE_OPS else [stage["op"], *_STAGE_OPS]
+            options = "".join(
+                f'<option value="{_esc(op)}"{" selected" if op == stage["op"] else ""}>{_esc(op)}</option>'
+                for op in ops
+            )
+            on = stage["enabled"]
+            first, last = number == 1, number == len(stages)
+            cards.append(
+                f'<div class="mg-stage" data-stage="{sid}" data-enabled="{"true" if on else "false"}">'
+                '<div class="mg-stage-head">'
+                f'<span class="mg-stage-num">{number}</span>'
+                f'<select class="mg-select mg-stage-op" data-stage-op="{sid}" title="Stage">{options}</select>'
+                '<span class="mg-stage-spacer"></span>'
+                f'<button type="button" class="mg-icon-btn" data-mg="st_run" data-stage="{sid}" '
+                'title="Run the pipeline up to and including this stage">'
+                '<span class="mdi mdi-play-outline"></span></button>'
+                f'<button type="button" class="mg-icon-btn" data-mg="st_up" data-stage="{sid}" '
+                f'title="Move up"{" disabled" if first else ""}><span class="mdi mdi-arrow-up"></span></button>'
+                f'<button type="button" class="mg-icon-btn" data-mg="st_down" data-stage="{sid}" '
+                f'title="Move down"{" disabled" if last else ""}><span class="mdi mdi-arrow-down"></span></button>'
+                f'<button type="button" class="mg-icon-btn" data-mg="st_toggle" data-stage="{sid}" '
+                f'title="{"Disable" if on else "Enable"} this stage" aria-pressed="{"false" if on else "true"}">'
+                f'<span class="mdi {"mdi-eye-outline" if on else "mdi-eye-off-outline"}"></span></button>'
+                f'<button type="button" class="mg-icon-btn mg-danger-icon" data-mg="st_remove" '
+                f'data-stage="{sid}" title="Remove this stage"><span class="mdi mdi-close"></span></button>'
+                "</div>"
+                f'<textarea class="mg-input mg-code mg-stage-body" id="{tid}-stage-{sid}" '
+                f'data-stage-body="{sid}" rows="3" spellcheck="false" '
+                f'aria-label="{_esc(stage["op"])} stage">{_esc(stage["body"])}</textarea>'
+                "</div>"
+            )
+        host.innerHTML = "".join(cards)
+        if not self._editor_available():
+            return  # the plain text boxes stay; _on_input keeps the stages current
+
+        def _run() -> None:
+            view["page"] = 1
+            _spawn(self._run(tid), "run")
+
+        for stage in stages:
+            sid = stage["id"]
+            element_id = f"{tid}-stage-{sid}"
+            self._editors[element_id] = self._mount_editor(
+                _el(element_id), role=f"stage-{sid}", multiline=True, on_run=_run,
+                on_change=lambda text, sid=sid: self._stage_set(tid, sid, body=text, rerender=False),
+                max_height="14em", fields=self._field_list(tid),
+            )
+        if focus is not None and f"{tid}-stage-{focus}" in self._editors:
+            self._editors[f"{tid}-stage-{focus}"]["editor"].focus()
+
     # -- running queries -------------------------------------------------
 
     async def _run(self, tid: str) -> None:
@@ -2088,13 +2320,14 @@ class Monguana(MainWindow):
         self._sync_table_sort(tid, result.get("sort") or [])
         self._render(tid)
 
-    async def _aggregate(self, tid: str) -> None:
+    async def _aggregate(self, tid: str, pipeline: str | None = None, label: str = "") -> None:
         view = self._views[tid]
         view["busy"] = True
         view["table"].set_busy(True)
         try:
             result = await MongoService().aggregate_async(
-                view["conn"], view["db"], view["coll"], self._query(tid)["pipeline"]
+                view["conn"], view["db"], view["coll"],
+                self._query(tid)["pipeline"] if pipeline is None else pipeline,
             )
         finally:
             view["busy"] = False
@@ -2108,10 +2341,11 @@ class Monguana(MainWindow):
         docs = result["docs"]
         view.update({"docs": docs, "total": len(docs), "exact": True, "page": 1,
                      "readonly": True})
+        prefix = f"{label}: " if label else ""
         self._status(
             tid,
-            "Showing the first 1,000 results." if result.get("truncated") else
-            f"{len(docs):,} result(s). Aggregation results are read-only.",
+            prefix + ("Showing the first 1,000 results." if result.get("truncated") else
+                      f"{len(docs):,} result(s). Aggregation results are read-only."),
             "info",
         )
         self._sync_table_sort(tid, [])
@@ -3121,6 +3355,20 @@ _CSS = """
 .mg-cm-fill .cm-editor{flex:1 1 auto;min-height:0;}
 .mg-qbuttons{display:flex;gap:4px;flex:0 0 auto;}
 .mg-btn[aria-pressed="true"]{border-color:var(--mg-accent);color:#6ee7b7;}
+.mg-stages{display:flex;flex-direction:column;gap:6px;max-height:45vh;overflow:auto;
+  padding-right:2px;}
+.mg-stages-empty{padding:10px 4px;}
+.mg-stage{border:1px solid var(--mg-line-2);border-radius:8px;background:var(--mg-bg);
+  padding:6px;display:flex;flex-direction:column;gap:5px;}
+.mg-stage[data-enabled="false"]{opacity:.55;border-style:dashed;}
+.mg-stage-head{display:flex;align-items:center;gap:4px;}
+.mg-stage-num{min-width:20px;text-align:center;color:var(--mg-dim);font:600 11px system-ui,sans-serif;}
+.mg-stage-op{font:600 12px ui-monospace,Menlo,Consolas,monospace;color:var(--mg-accent);
+  padding:3px 6px;}
+.mg-stage-spacer{flex:1 1 auto;}
+.mg-stage-body{resize:vertical;}
+.mg-danger-icon:hover:not(:disabled){background:#7f1d1d;color:#fecaca;}
+.mg-icon-btn[aria-pressed="true"]{color:#fbbf24;}
 .mg-builder{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--mg-line-2);
   border-radius:8px;background:var(--mg-bg);}
 .mg-qb-rows{display:flex;flex-direction:column;gap:5px;}
