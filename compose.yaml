@@ -1,0 +1,33 @@
+# Local testing with Podman:
+#   podman compose up -d        (needs: systemctl --user enable --now podman.socket)
+# Without compose, which is what scripts/podman-run.sh does.
+
+services:
+
+  monguana:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: localhost/monguana:latest
+    container_name: monguana
+    hostname: monguana
+    labels:
+      app: Monguana
+    restart: unless-stopped
+    # Host networking, as the original ran: a database GUI must reach servers
+    # on this machine's loopback and on the LAN. The app therefore binds to
+    # 127.0.0.1 itself; pytincture refuses authenticated plain HTTP anywhere
+    # else anyway.
+    network_mode: host
+    userns_mode: "keep-id:uid=10001,gid=999"
+    env_file:
+      - .env
+    environment:
+      - MONGUANA_DATA_DIR=/data
+      - MONGUANA_BIND=127.0.0.1
+      - MONGUANA_CANONICAL_ORIGIN=${MONGUANA_CANONICAL_ORIGIN:-http://127.0.0.1:8766}
+    volumes:
+      - monguana_data:/data:U
+
+volumes:
+  monguana_data:

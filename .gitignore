@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+
+# Database (contains saved connection passwords) and its keys
+*.db
+*.db-wal
+*.db-shm
+secret.key
+session.key
+data/
+
+# Container secrets
+.env
+
+# Wheels staged for the container build
+vendor-wheels/
+
+# Rebuilt by ../wa_pytincture_widgetset/scripts/dev_wheel.sh
+appcode/wapyt-*.whl
+
+# Smoke-test screenshots
+tests/smoke/*.png
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# CLAUDE.md is deliberately TRACKED: it records the pytincture/wapyt pitfalls.
