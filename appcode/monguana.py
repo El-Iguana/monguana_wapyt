@@ -65,6 +65,14 @@ from services.docfmt import (
     union_columns,
 )
 from services.mongo_service import MongoService
+from services.querybuilder import (
+    OPERATORS as QB_OPERATORS,
+    VALUE_TYPES as QB_TYPES,
+    BuilderError,
+    build_filter,
+    default_type,
+    operators_for,
+)
 from services.user_service import UserService
 
 # pytincture resolves the browser entrypoint by AST, and its MainWindow
@@ -333,6 +341,7 @@ class Monguana(MainWindow):
         self._listen("click", self._on_click)
         self._listen("change", self._on_change)
         self._listen("keydown", self._on_keydown)
+        self._listen("input", self._on_input)
 
     def _listen(self, event: str, handler) -> None:
         proxy = create_proxy(handler)
@@ -380,6 +389,15 @@ class Monguana(MainWindow):
         if tid in self._views:
             self._on_view_action(tid, str(button.dataset.mg), button)
 
+    def _on_input(self, event) -> None:
+        """Typing in a builder row: keep its state and the preview current."""
+        target = event.target
+        if not target or not hasattr(target, "closest") or not target.closest("[data-qb]"):
+            return
+        view_el = target.closest(".mg-view")
+        if view_el and str(view_el.dataset.tab) in self._views:
+            self._qb_read(str(view_el.dataset.tab), target, rerender=False)
+
     def _on_change(self, event) -> None:
         target = event.target
         if not target or not hasattr(target, "closest"):
@@ -390,6 +408,11 @@ class Monguana(MainWindow):
         tid = str(view_el.dataset.tab)
         view = self._views.get(tid)
         if view is None:
+            return
+        if target.closest("[data-qb]"):
+            # A field chosen, or an operator or type changed: the row's
+            # choices may change with it, so it is drawn again.
+            self._qb_read(tid, target, rerender=True)
             return
         role = str(target.dataset.role or "")
         if role == "mode":
@@ -433,6 +456,11 @@ class Monguana(MainWindow):
             if key == "Enter" and str(target.dataset.role or "") == "page":
                 event.preventDefault()
                 self._goto_page(tid, str(target.value))
+                return
+            # Enter in a builder row applies the builder.
+            if key == "Enter" and target.closest("[data-qb]") and tid in self._views:
+                event.preventDefault()
+                self._qb_action(tid, "qb_apply", target)
                 return
             # A one-line filter box: Enter runs, Shift+Enter adds a line.
             if key == "Enter" and not event.shiftKey and str(target.dataset.role or "") in (
@@ -1337,6 +1365,7 @@ class Monguana(MainWindow):
             "docs": [], "mode": "find", "shown": "table", "readonly": False,
             "table": None, "tree": None, "schema": None, "tsort": None,
             "syncing_sort": False, "busy": False,
+            "builder": {"logic": "and", "rows": [self._qb_blank()]},
         }
         self._views[tid] = view
         view["table"] = self._make_table(tid)
@@ -1387,6 +1416,9 @@ class Monguana(MainWindow):
           <span class="mdi mdi-counter"></span><span>Count</span></button>
         <button type="button" class="mg-btn" data-mg="explain" title="Show the query plan">
           <span class="mdi mdi-map-search-outline"></span><span>Explain</span></button>
+        <button type="button" class="mg-btn" data-mg="builder" title="Build the filter from conditions"
+          aria-pressed="false">
+          <span class="mdi mdi-filter-cog-outline"></span><span>Builder</span></button>
         <button type="button" class="mg-btn" data-mg="fields" title="Fields sampled from the collection">
           <span class="mdi mdi-format-list-bulleted-type"></span><span>Fields</span></button>
         <button type="button" class="mg-btn" data-mg="reset" title="Clear the query">
@@ -1408,6 +1440,7 @@ class Monguana(MainWindow):
       <select class="mg-select" data-role="stage" title="Insert a stage template">{stages}</select>
       <span class="mg-hint">Read-only: $out and $merge are refused. Results are capped at 1,000.</span>
     </div>
+    <div class="mg-builder" id="{tid}-builder" hidden></div>
   </div>
   <div class="mg-bar">
     <button type="button" class="mg-btn" data-mg="insert" title="Insert a document (N)"{write}>
@@ -1580,6 +1613,10 @@ class Monguana(MainWindow):
             _spawn(self._explain(tid), "explain")
         elif action == "fields":
             _spawn(self._fields_dialog(tid), "fields")
+        elif action == "builder":
+            self._qb_toggle(tid)
+        elif action.startswith("qb_"):
+            self._qb_action(tid, action, button)
         elif action == "reset":
             for suffix in ("filter", "sort", "projection", "update", "pipeline"):
                 self._set_text(f"{tid}-{suffix}", "")
@@ -1774,6 +1811,9 @@ class Monguana(MainWindow):
         if result.get("ok") and tid in self._views and not self._views[tid].get("schema"):
             self._views[tid]["schema"] = result
             self._editor_fields(tid)
+            panel = _el(f"{tid}-builder")
+            if panel and not panel.hidden:
+                self._qb_render(tid)
 
     def _field_list(self, tid: str):
         """The view's sampled field paths as the editor's JS completion list."""
@@ -1816,6 +1856,195 @@ class Monguana(MainWindow):
         field = _el(element_id)
         if field:
             field.hidden = hidden
+
+    # -- the visual query builder (ROADMAP phase 33) -----------------------
+
+    @staticmethod
+    def _qb_blank() -> dict:
+        # type_set: the person chose the type, so picking a field must not
+        # replace it with the field's sampled one.
+        return {"field": "", "op": "$eq", "type": "string", "value": "", "type_set": False}
+
+    def _qb_types(self, tid: str) -> dict:
+        schema = (self._views.get(tid) or {}).get("schema") or {}
+        return {row["path"]: row["types"] for row in schema.get("fields", [])}
+
+    def _qb_toggle(self, tid: str) -> None:
+        panel = _el(f"{tid}-builder")
+        root = js.document.querySelector(f'.mg-view[data-tab="{tid}"]')
+        opening = bool(panel.hidden)
+        panel.hidden = not opening
+        root.querySelector('[data-mg="builder"]').setAttribute("aria-pressed", "true" if opening else "false")
+        if opening:
+            self._qb_render(tid)
+            first = panel.querySelector("[data-qb=field]")
+            if first:
+                first.focus()
+
+    def _qb_row_html(self, tid: str, index: int, row: dict) -> str:
+        sampled = self._qb_types(tid)
+        op_labels = dict(QB_OPERATORS)
+        types = sampled.get(row["field"].strip(), [])
+        ops = operators_for(row["type"], types)
+        if row["op"] not in ops:
+            ops = ops + [row["op"]]
+        op_options = "".join(
+            f'<option value="{_esc(op)}"{" selected" if op == row["op"] else ""}>'
+            f"{_esc(op_labels.get(op, op))}</option>" for op in ops
+        )
+        type_options = "".join(
+            f'<option value="{value}"{" selected" if value == row["type"] else ""}>{label}</option>'
+            for value, label in QB_TYPES
+        )
+        if row["op"] == "$exists":
+            chosen = "false" if str(row["value"]).lower() == "false" else "true"
+            value_html = (
+                '<select class="mg-select mg-qb-value" data-qb="value">'
+                f'<option value="true"{" selected" if chosen == "true" else ""}>yes</option>'
+                f'<option value="false"{" selected" if chosen == "false" else ""}>no</option>'
+                "</select>"
+            )
+        else:
+            hint = {
+                "$in": "a, b, c", "$nin": "a, b, c", "$regex": "pattern or /pattern/i",
+                "$type": "string, int, date, objectId…", "$size": "3",
+            }.get(row["op"]) or {
+                "date": "2026-03-01 or 2026-03-01T12:00:00Z", "objectid": "24 hex digits",
+                "bool": "true or false", "uuid": "xxxxxxxx-xxxx-…", "null": "(no value)",
+                "raw": "any value, e.g. ISODate(\"…\")",
+            }.get(row["type"], "value")
+            disabled = " disabled" if row["type"] == "null" and row["op"] in ("$eq", "$ne") else ""
+            value_html = (
+                f'<input class="mg-input mg-code mg-qb-value" data-qb="value" '
+                f'value="{_esc(row["value"])}" placeholder="{_esc(hint)}" '
+                f'spellcheck="false" autocomplete="off"{disabled}>'
+            )
+        type_hint = (" · sampled: " + ", ".join(types)) if types else ""
+        return (
+            f'<div class="mg-qb-row" data-row="{index}">'
+            f'<input class="mg-input mg-code mg-qb-field" data-qb="field" list="{tid}-qb-fields" '
+            f'value="{_esc(row["field"])}" placeholder="field" spellcheck="false" autocomplete="off">'
+            f'<select class="mg-select mg-qb-op" data-qb="op" title="Operator">{op_options}</select>'
+            f'<select class="mg-select mg-qb-type" data-qb="type" '
+            f'title="Write the value as this type{_esc(type_hint)}">{type_options}</select>'
+            f"{value_html}"
+            f'<button type="button" class="mg-icon-btn" data-mg="qb_remove" data-row="{index}" '
+            f'title="Remove this condition"><span class="mdi mdi-close"></span></button>'
+            "</div>"
+        )
+
+    def _qb_render(self, tid: str) -> None:
+        state = self._views[tid]["builder"]
+        sampled = self._qb_types(tid)
+        rows_html = [self._qb_row_html(tid, index, row) for index, row in enumerate(state["rows"])]
+        datalist = "".join(f'<option value="{_esc(path)}">' for path in sampled)
+        logic = state["logic"]
+        panel = _el(f"{tid}-builder")
+        panel.innerHTML = (
+            f'<datalist id="{tid}-qb-fields">{datalist}</datalist>'
+            f'<div class="mg-qb-rows">{"".join(rows_html)}</div>'
+            '<div class="mg-qb-foot">'
+            '<span class="mg-seg" role="group" aria-label="Combine conditions">'
+            f'<button type="button" class="mg-seg-btn mg-seg-text" data-mg="qb_logic" data-logic="and" '
+            f'aria-pressed="{"true" if logic == "and" else "false"}">AND</button>'
+            f'<button type="button" class="mg-seg-btn mg-seg-text" data-mg="qb_logic" data-logic="or" '
+            f'aria-pressed="{"true" if logic == "or" else "false"}">OR</button></span>'
+            '<button type="button" class="mg-btn" data-mg="qb_add"><span class="mdi mdi-plus"></span>'
+            "<span>Condition</span></button>"
+            f'<code class="mg-qb-preview" id="{tid}-qb-preview"></code>'
+            '<button type="button" class="mg-btn" data-mg="qb_clear">Clear</button>'
+            '<button type="button" class="mg-btn mg-primary" data-mg="qb_apply" '
+            'title="Replace the filter with this and run it (Ctrl+Z in the filter undoes)">'
+            '<span class="mdi mdi-check"></span><span>Apply</span></button>'
+            "</div>"
+        )
+        self._qb_preview(tid)
+
+    def _qb_preview(self, tid: str) -> str | None:
+        """Show the filter the rows make, or why they cannot. Returns the text."""
+        state = self._views[tid]["builder"]
+        preview = _el(f"{tid}-qb-preview")
+        try:
+            text = build_filter(state["rows"], state["logic"])
+        except BuilderError as exc:
+            if preview:
+                preview.textContent = str(exc)
+                preview.dataset.state = "error"
+            return None
+        if preview:
+            preview.textContent = text
+            preview.dataset.state = "ok"
+        return text
+
+    def _qb_read(self, tid: str, target, *, rerender: bool) -> None:
+        row_el = target.closest(".mg-qb-row")
+        if not row_el:
+            return
+        state = self._views[tid]["builder"]
+        index = int(row_el.dataset.row)
+        if index >= len(state["rows"]):
+            return
+        row = state["rows"][index]
+        key = str(target.dataset.qb)
+        row[key] = str(target.value)
+        if key == "type":
+            row["type_set"] = True
+        if key == "field" and rerender and not row["type_set"]:
+            # A field was picked: write its values as the type it was sampled with.
+            row["type"] = default_type(self._qb_types(tid).get(row["field"].strip(), []))
+        if key in ("type", "field") and rerender:
+            allowed = operators_for(row["type"], self._qb_types(tid).get(row["field"].strip(), []))
+            if row["op"] not in allowed:
+                row["op"] = "$eq"
+        if rerender and key in ("field", "op", "type"):
+            # Redraw this row only: redrawing the panel would replace a button
+            # mid-click (a field's change fires on blur, i.e. on the way to
+            # Apply). Focus stays on the same control of the new row.
+            active = js.document.activeElement
+            focused = str(active.dataset.qb) if active and row_el.contains(active) else ""
+            holder = js.document.createElement("div")
+            holder.innerHTML = self._qb_row_html(tid, index, row)
+            fresh = holder.firstElementChild
+            row_el.replaceWith(fresh)
+            if focused:
+                control = fresh.querySelector(f"[data-qb={focused}]")
+                if control:
+                    control.focus()
+        self._qb_preview(tid)
+
+    def _qb_action(self, tid: str, action: str, button) -> None:
+        state = self._views[tid]["builder"]
+        if action == "qb_add":
+            state["rows"].append(self._qb_blank())
+            self._qb_render(tid)
+            fields = _el(f"{tid}-builder").querySelectorAll("[data-qb=field]")
+            fields.item(fields.length - 1).focus()
+        elif action == "qb_remove":
+            index = int(button.dataset.row)
+            if 0 <= index < len(state["rows"]):
+                state["rows"].pop(index)
+            if not state["rows"]:
+                state["rows"].append(self._qb_blank())
+            self._qb_render(tid)
+        elif action == "qb_logic":
+            state["logic"] = str(button.dataset.logic)
+            self._qb_render(tid)
+        elif action == "qb_clear":
+            state["rows"] = [self._qb_blank()]
+            state["logic"] = "and"
+            self._qb_render(tid)
+        elif action == "qb_apply":
+            text = self._qb_preview(tid)
+            if text is None:
+                self._toast("Fix the highlighted condition first.")
+                return
+            self._set_text(f"{tid}-filter", text)
+            view = self._views[tid]
+            if view["mode"] == "aggregate":
+                _el(f"{tid}-mode").value = "find"
+                self._apply_mode(tid, "find")
+            view["page"] = 1
+            _spawn(self._run(tid), "builder apply")
 
     # -- running queries -------------------------------------------------
 
@@ -2891,6 +3120,21 @@ _CSS = """
 .mg-cm-fill{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}
 .mg-cm-fill .cm-editor{flex:1 1 auto;min-height:0;}
 .mg-qbuttons{display:flex;gap:4px;flex:0 0 auto;}
+.mg-btn[aria-pressed="true"]{border-color:var(--mg-accent);color:#6ee7b7;}
+.mg-builder{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--mg-line-2);
+  border-radius:8px;background:var(--mg-bg);}
+.mg-qb-rows{display:flex;flex-direction:column;gap:5px;}
+.mg-qb-row{display:flex;align-items:center;gap:6px;}
+.mg-qb-field{flex:0 1 240px;min-width:120px;}
+.mg-qb-op{flex:0 0 108px;}
+.mg-qb-type{flex:0 0 108px;}
+.mg-qb-value{flex:1 1 auto;min-width:100px;}
+.mg-qb-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.mg-seg .mg-seg-text{width:auto;padding:0 10px;font:600 11px system-ui,sans-serif;letter-spacing:.04em;}
+.mg-qb-preview{flex:1 1 200px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  padding:5px 8px;border-radius:5px;background:var(--mg-panel);color:#6ee7b7;
+  font:12px ui-monospace,Menlo,Consolas,monospace;}
+.mg-qb-preview[data-state="error"]{color:#fca5a5;}
 .mg-input,.mg-select{background:var(--mg-bg);color:var(--mg-text);border:1px solid var(--mg-line-2);
   border-radius:6px;padding:6px 8px;font:12.5px system-ui,sans-serif;box-sizing:border-box;}
 .mg-input:focus,.mg-select:focus{outline:none;border-color:var(--mg-accent);

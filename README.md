@@ -37,6 +37,10 @@ its own query, page and view.
   `ObjectId("…")`, `ISODate("…")`, `NumberDecimal("…")`, `UUID("…")`, regex
   literals `/^ab/i`, comments. Extended JSON works too — what the viewer shows
   pastes straight back with its types.
+- **Visual query builder:** conditions as rows — field, operator, value type,
+  value — combined with AND or OR, with a live preview of the filter. Values
+  are written as their type (dates as `ISODate`, ids as `ObjectId`, zip codes
+  stay strings), defaulting to the type the field was sampled with.
 - **Query modes:** `find`, `aggregate`, `updateOne`, `updateMany`,
   `deleteOne`, `deleteMany`. Writes show how many documents match and the
   first 20 of them, and wait for you to confirm.
