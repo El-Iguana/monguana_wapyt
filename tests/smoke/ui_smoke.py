@@ -213,17 +213,73 @@ def main() -> int:
         expect(page.locator("#mg-toast")).to_contain_text("modified 1", timeout=10000)
         expect(view.locator(f"#{tid}-mode")).to_have_value("find")
 
-        step("aggregate")
+        step("aggregate: the pipeline as stage cards (phase 34)")
         view.locator(f"#{tid}-mode").select_option("aggregate")
-        pipeline_box = view.locator("[data-role=pipeline-editor] .cm-content")
-        expect(pipeline_box).to_be_visible()
-        # A stage template goes into the editor, not just the hidden box.
-        view.locator("select[data-role=stage]").select_option("$limit")
-        expect(pipeline_box).to_contain_text("$limit: 10")
-        pipeline_box.fill('[{$group: {_id: "$status", n: {$sum: 1}}}, {$sort: {n: -1}}]')
-        pipeline_box.press("Control+Enter")
-        expect(view.locator(".mg-summary")).to_have_text("4 result(s)", timeout=10000)
+        stages_host = view.locator(f"#{tid}-stages")
+        expect(stages_host).to_contain_text("No stages yet")
+        add_stage = view.locator("select[data-role=stage]")
+        cards = stages_host.locator(".mg-stage")
+
+        def card_box(n: int):
+            return cards.nth(n).locator(".cm-content")
+
+        add_stage.select_option("$match")
+        expect(cards).to_have_count(1)
+        card_box(0).fill('{status: {$ne: "cancelled"}}')
+        add_stage.select_option("$group")
+        expect(card_box(1)).to_contain_text("$sum")  # the template, in the card
+        card_box(1).fill('{_id: "$status", n: {$sum: 1}}')
+        add_stage.select_option("$sort")
+        card_box(2).fill("{n: -1}")
+        raw = view.locator(f"#{tid}-pipeline")  # hidden: what Run sends
+        assert raw.input_value().startswith("[\n  {$match: {status: {$ne:"), raw.input_value()
+        card_box(2).press("Control+Enter")
+        expect(view.locator(".mg-summary")).to_have_text("3 result(s)", timeout=10000)
         shot(page, "07-aggregate")
+
+        # Run to here: only the $match stage.
+        cards.nth(0).locator("[data-mg=st_run]").click()
+        expect(view.locator(".mg-status")).to_contain_text("After stage 1 ($match)", timeout=10000)
+        after_match = view.locator(".mg-summary").inner_text()
+        assert after_match not in ("3 result(s)", "137 result(s)"), after_match
+
+        # Reorder: $sort up above $group.
+        cards.nth(2).locator("[data-mg=st_up]").click()
+        expect(cards.nth(1).locator("[data-stage-op]")).to_have_value("$sort")
+        cards.nth(1).locator("[data-mg=st_down]").click()
+        expect(cards.nth(2).locator("[data-stage-op]")).to_have_value("$sort")
+
+        # Disable $match: it becomes a comment and no longer runs.
+        cards.nth(0).locator("[data-mg=st_toggle]").click()
+        expect(cards.nth(0)).to_have_attribute("data-enabled", "false")
+        assert "/* off: {$match" in raw.input_value(), raw.input_value()
+        view.locator("[data-mg=run]").click()
+        expect(view.locator(".mg-summary")).to_have_text("4 result(s)", timeout=10000)
+
+        # Raw and back: nothing is lost, the disabled stage included.
+        view.locator('[data-mg=pl_mode][data-plmode="raw"]').click()
+        raw_box = view.locator("[data-role=pipeline-editor] .cm-content")
+        expect(raw_box).to_be_visible()
+        expect(raw_box).to_contain_text("/* off: {$match")
+        expect(stages_host).to_be_hidden()
+        view.locator('[data-mg=pl_mode][data-plmode="stages"]').click()
+        expect(cards).to_have_count(3)
+        expect(cards.nth(0)).to_have_attribute("data-enabled", "false")
+
+        # A raw pipeline that does not split stays raw, with the reason.
+        view.locator('[data-mg=pl_mode][data-plmode="raw"]').click()
+        raw_box.fill("[{$match: {a: 1}, $limit: 2}]")
+        view.locator('[data-mg=pl_mode][data-plmode="stages"]').click()
+        expect(view.locator(".mg-status")).to_contain_text("more than one key")
+        expect(raw_box).to_be_visible()
+        raw_box.fill('[{$group: {_id: "$status", n: {$sum: 1}}}, {$limit: 2}]')
+        view.locator('[data-mg=pl_mode][data-plmode="stages"]').click()
+        expect(cards).to_have_count(2)
+        expect(view.locator(".mg-status")).to_be_hidden()
+        cards.nth(1).locator("[data-mg=st_remove]").click()
+        expect(cards).to_have_count(1)
+        assert "$limit" not in raw.input_value()
+        shot(page, "07c-stages")
 
         step("visual query builder: typed values, live preview, apply")
         view.locator(f"#{tid}-mode").select_option("find")
@@ -393,6 +449,16 @@ def main() -> int:
         expect(plain.locator(".mg-summary")).not_to_have_text("1–50 of 137", timeout=10000)
         plain.locator("[data-role=sort]").fill("{number: 1}")
         assert plain.locator("[data-role=pipeline]").count() == 1
+        plain.locator(f"#{ftid}-mode").select_option("aggregate")
+        plain.locator("select[data-role=stage]").select_option("$limit")
+        plain_stage = plain.locator(".mg-stage textarea[data-stage-body]")
+        expect(plain_stage).to_be_visible()
+        plain_stage.fill("3")
+        plain.locator("[data-mg=run]").click()
+        expect(plain.locator(".mg-summary")).to_have_text("3 result(s)", timeout=10000)
+        plain.locator(f"#{ftid}-mode").select_option("find")
+        plain.locator("[data-mg=run]").click()
+        expect(plain.locator(".mg-summary")).to_contain_text("of", timeout=10000)
         plain.locator(".wapyt-datatable-table tbody tr[data-row-id]").first.dblclick()
         plain_doc = fallback.locator(".wapyt-modal-overlay").last.locator(".mg-editor-text")
         expect(plain_doc).to_be_visible(timeout=10000)

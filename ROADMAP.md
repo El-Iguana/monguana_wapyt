@@ -10,7 +10,7 @@ PRs or other branches). Numbering continues from the original's.
 |---|---|---|
 | 6: Monaco + autocomplete | CodeMirror in every query box and the document editor, with field completions (phases 31–32) | — |
 | 10: Visual query builder | Builder panel with typed values (phase 33) | — |
-| 11: Pipeline builder | One text box + stage templates | No per-stage list with move, enable/disable, remove |
+| 11: Pipeline builder | Stage cards + Raw, with Run to here (phase 34) | — |
 | 24: Column width/order memory | Nothing | wapyt's DataTable cannot resize or reorder columns |
 | 13/16: Dump/restore progress console | Summary when it finishes | No live progress |
 | Small items | | View mode not remembered; `system.*` collections always listed |
@@ -87,12 +87,27 @@ set of create options. See CLAUDE.md, *Index CRUD*.
 - Not done: reading an existing filter back into rows. Apply replaces the
   filter.
 
-## Phase 34: pipeline stage list (original phase 11)
+## Phase 34: pipeline stage list (original phase 11) — done (2026-09-25)
 
-- One editor per stage, with move up/down, enable/disable and remove.
-- Switch between the stage list and the raw pipeline text.
-- New: "Run up to this stage" to see intermediate results.
-- The server's read-only pipeline checks stay as they are.
+- In aggregate mode the pipeline is a list of **stage cards**: each with its
+  stage selector, its own editor, **Run to here**, move up/down,
+  enable/disable and remove. "+ stage" adds a card with the stage's template.
+- **Stages | Raw** switches to the whole pipeline as text and back.
+- **The raw text stays the source of truth** (it is what Run sends): the cards
+  rewrite it on every change. Disabled stages are kept in it as
+  `/* off: {…} */` comments, which the server's parser skips — a disabled
+  stage cannot run, and nothing is lost switching views.
+- `services/pipeline_text.py` (pure, both sides) splits text into stages and
+  joins them back, skipping over strings, regex literals and comments
+  (`/[a-z],]/` and `"a, ]}"` are not structure). Text that does not split —
+  a stage with two keys, say — stays in Raw with the reason and position.
+  `tests/test_pipeline_text.py` round-trips a deliberately awkward pipeline
+  and proves the output with the server's parser.
+- New over the original: Run to here.
+- **Bug found by the fallback test:** in Pyodide, reading a `dataset`
+  property the element lacks raises `AttributeError` (JS would give
+  `undefined`), so a plain stage box — no `data-role` — crashed the change
+  handler. Such reads now go through `getAttribute` (`_role`).
 
 ## Phase 35: column width/order memory (original phase 24)
 
@@ -121,5 +136,5 @@ set of create options. See CLAUDE.md, *Index CRUD*.
 
 ## Order
 
-31–33 are done; 34 (pipeline stage list) next. It can use `_mount_editor` for
-each stage's editor.
+31–34 are done; 35 (column width/order memory) next. It starts with a wapyt
+change: resizable, reorderable DataTable columns.

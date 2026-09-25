@@ -36,6 +36,7 @@ appcode/                    # pytincture modules_path
     mql.py                  #   shell-syntax parser + query safety   (server only)
     docfmt.py               #   display helpers                      (BOTH sides)
     querybuilder.py         #   visual query builder -> filter text  (BOTH sides)
+    pipeline_text.py        #   pipeline text <-> stage cards         (BOTH sides)
     mongo_pool.py           #   MongoClient pool — plain module, NOT a BFF
     connection_service.py   #   BFF: profiles, test, connect/disconnect
     mongo_service.py        #   BFF: databases, collections, documents, indexes…
@@ -270,6 +271,32 @@ into shell-syntax text; the view's **Builder** panel (`_qb_*` in
 - Apply goes through `_set_text`, so it lands in the filter editor's undo
   history.
 
+### The pipeline stage list (ROADMAP phase 34)
+
+Aggregate mode shows stage cards (`_render_stages`) or the raw text (**Stages
+| Raw**, `view["pl_mode"]`). **The raw `{tid}-pipeline` text is the source of
+truth**: every card change rewrites it (`_stages_to_text`, via
+`pipeline_text.join`), so Run, Count's validation and everything else read
+one place. Cards come back from it with `pipeline_text.split`.
+
+- Disabled stages are `/* off: {…} */` comments in the text; the server's
+  parser skips comments, so they never run. A stage containing `*/` cannot be
+  disabled (it would end the comment) and says so.
+- Cards are redrawn whole on every structural change, so their editors are
+  destroyed and remounted (`{tid}-stage-<id>` in `self._editors`); editing a
+  body only updates state (`on_change` hook of `_mount_editor`).
+- Run to here sends `compose(stages, upto=i)` straight to `_aggregate`
+  without touching the text.
+
+### JS properties that may be missing
+
+Reading `element.dataset.x`, or any property, that the JS object lacks
+**raises `AttributeError` in Pyodide** where JS would give `undefined`. A plain
+stage textarea (no `data-role`) crashed `_on_change` this way, and the
+builder's focus restore could have on its remove button. Use
+`getAttribute("data-x")` (null → falsy `JsNull`) — `_role(el)` for roles — or
+`getattr(obj, "x", None)`, as with `js.navigator.brave` in IguanaXterm.
+
 ### The code editor (ROADMAP phase 31)
 
 CodeMirror 6, bundled by `tools/codemirror/build.sh` into one classic script
@@ -308,10 +335,8 @@ in the background (`_sample_fields`) so completions offer field paths at once.
 
 See ROADMAP.md for the plan. In short:
 
-1. **Pipeline stage list** — add/reorder/toggle stages individually. Today:
-   one textarea plus stage templates.
-2. **Column width/order persistence** per collection.
-3. **Dump/restore progress console.** Restore returns a per-collection summary
+1. **Column width/order persistence** per collection.
+2. **Dump/restore progress console.** Restore returns a per-collection summary
    when done; no live progress.
 
 ## Conventions

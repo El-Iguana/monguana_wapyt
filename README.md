@@ -54,9 +54,10 @@ delete or a bulk update with any operators. The editor always loads the whole
 document, so a projection can never make a save drop fields, and the whole
 document is saved, so a field you delete is really deleted.
 
-**Aggregation.** A pipeline editor with stage templates. Read-only by design:
-`$out` and `$merge` are refused at any depth, including inside `$lookup` and
-`$facet`.
+**Aggregation.** The pipeline as stage cards — each with its own editor, run
+up to that stage, move, disable or remove — or as raw text, switching freely
+between the two. Read-only by design: `$out` and `$merge` are refused at any
+depth, including inside `$lookup` and `$facet`.
 
 **Indexes.** List with sizes, create (compound, unique, sparse, TTL, partial,
 hidden, text, 2dsphere, hashed, wildcard, collation), edit, hide from the
