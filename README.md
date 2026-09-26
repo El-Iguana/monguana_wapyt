@@ -22,7 +22,8 @@ sent back to the browser.
 
 **Sidebar tree.** Server → database → collection, loaded as you expand, with a
 right-click menu that fits what you clicked: create or drop databases, create,
-rename or drop collections, indexes, statistics, dump and restore.
+rename or drop collections, indexes, statistics, dump and restore. MongoDB's
+own `system.*` collections are hidden unless you ask for them.
 
 **Collection tabs.** As many as you like, several on one collection, each with
 its own query, page and view.
@@ -30,7 +31,8 @@ its own query, page and view.
 - **Table, JSON and tree views.** The table's columns are the union of every
   document on the page; a header click sorts on the server, not just the page
   on screen. Drag a column's edge to resize it or its header to move it; the
-  layout is remembered per collection, for you, on any browser. The tree view
+  layout — and whether you last looked at a collection as a table, JSON or a
+  tree — is remembered per collection, for you, on any browser. The tree view
   caps its depth and size and says when it does.
 - **A code editor in every query box and the document editor** (CodeMirror 6,
   bundled — no CDN): highlighting, bracket matching, and completions for

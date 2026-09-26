@@ -399,3 +399,22 @@ def test_restore_job_progress_and_cancel(env):
         assert client[target]["big"].count_documents({}) == 1000
     finally:
         client.drop_database(target)
+
+
+def test_an_edited_document_keeps_its_int64s(env):
+    """Relaxed EJSON used to turn a small Int64 into an int32 on save."""
+    import json
+
+    from bson.int64 import Int64
+
+    from services.mongo_pool import pool
+
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.insert(conn, DB, "longs", "{_id: 'x', n: NumberLong(5), i: 5}"))
+    row = ok(mongo.find(conn, DB, "longs"))["docs"][0]
+    doc = ok(mongo.get_document(conn, DB, "longs", row["id"]))["doc"]
+    assert doc["n"] == {"$numberLong": "5"}
+    doc["note"] = "edited"
+    ok(mongo.replace(conn, DB, "longs", row["id"], json.dumps(doc)))
+    stored = pool.client(1, conn)[DB]["longs"].find_one({"_id": "x"})
+    assert type(stored["n"]) is Int64 and type(stored["i"]) is int and stored["note"] == "edited"
