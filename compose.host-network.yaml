@@ -1,0 +1,49 @@
+# Monguana on the host's network — Linux only (Docker Engine or Podman).
+#
+#   docker compose -f compose.host-network.yaml up -d --build
+#   podman compose -f compose.host-network.yaml up -d --build
+#
+# Use this instead of compose.yaml when the MongoDB servers you manage listen
+# on this machine's 127.0.0.1 only: with host networking, 127.0.0.1 inside the
+# container *is* this machine, so a profile can say host 127.0.0.1. With
+# compose.yaml's bridge network, host.docker.internal reaches only services
+# listening beyond loopback (INSTALL.md, "MongoDB on the same computer").
+#
+# Monguana then binds to 127.0.0.1 itself, so it is still not on the network.
+# Docker Desktop (Windows, macOS) and Podman machines run containers in a VM,
+# where host networking means the VM's network: use compose.yaml there.
+
+name: monguana
+
+services:
+  monguana:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: localhost/monguana:latest
+    container_name: monguana
+    hostname: monguana
+    labels:
+      app: Monguana
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      MONGUANA_DATA_DIR: /data
+      MONGUANA_BIND: 127.0.0.1
+      PORT: ${MONGUANA_PORT:-8766}
+      MONGUANA_CANONICAL_ORIGIN: ${MONGUANA_CANONICAL_ORIGIN:-http://127.0.0.1:${MONGUANA_PORT:-8766}}
+      MONGUANA_ALLOWED_HOSTS: ${MONGUANA_ALLOWED_HOSTS:-}
+    volumes:
+      - monguana-data:/data
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  monguana-data:
+    name: monguana-data

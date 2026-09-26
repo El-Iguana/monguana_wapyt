@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Rebuild and restart the local Monguana container from the working tree.
+# Rebuild and restart the local *development* Monguana container from the
+# working tree and the sibling wapyt checkout. Linux + Podman only.
+# To install Monguana, use compose instead: see INSTALL.md.
 #
 #   scripts/podman-run.sh            rebuild and restart
 #   scripts/podman-run.sh --logs     ... and follow the logs
@@ -21,13 +23,18 @@ cd "$ROOT"
 [ -f .env ] || { echo "no .env — copy .env.example and set MONGUANA_ADMIN_PASS" >&2; exit 1; }
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)"
 
-# wapyt is not on PyPI, so its wheel has to be in the build context.
-echo "==> building the wapyt wheel"
-mkdir -p vendor-wheels && rm -f vendor-wheels/wapyt-*.whl
-( cd ../wa_pytincture_widgetset && uv build --wheel -o "$ROOT/vendor-wheels" >/dev/null )
+# Build against the sibling wapyt checkout, not the commit the Containerfile
+# pins, so unmerged widgetset work shows up here. A filtered copy, because the
+# checkout carries a test virtualenv of a couple of hundred MB.
+WAPYT="$(cd ../wa_pytincture_widgetset && pwd)"
+CONTEXT="$(mktemp -d)"
+trap 'rm -rf "$CONTEXT"' EXIT
+tar -C "$WAPYT" --exclude=.git --exclude=.venv --exclude=__pycache__ \
+    --exclude=build --exclude=dist --exclude='*.whl' -cf - . | tar -C "$CONTEXT" -xf -
 
-echo "==> building $IMAGE:$VERSION"
-podman build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" -f Containerfile .
+echo "==> building $IMAGE:$VERSION (wapyt from $WAPYT)"
+podman build --build-context "wapyt-src=$CONTEXT" \
+  -t "$IMAGE:$VERSION" -t "$IMAGE:latest" -f Containerfile .
 
 echo "==> restarting $NAME"
 podman rm -f "$NAME" >/dev/null 2>&1 || true

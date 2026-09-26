@@ -1,6 +1,14 @@
-# Local testing with Podman:
-#   podman compose up -d        (needs: systemctl --user enable --now podman.socket)
-# Without compose, which is what scripts/podman-run.sh does.
+# Monguana with Docker Compose or Podman Compose, on Linux, Windows or macOS.
+# Full instructions: INSTALL.md.
+#
+#   cp .env.example .env        # then set MONGUANA_ADMIN_PASS
+#   docker compose up -d --build        (or: podman compose up -d --build)
+#   open http://127.0.0.1:8766/monguana
+#
+# Optional MongoDB to try it with (profile "mongo"; host "mongo", port 27017):
+#   docker compose --profile mongo up -d --build
+
+name: monguana
 
 services:
 
@@ -14,20 +22,48 @@ services:
     labels:
       app: Monguana
     restart: unless-stopped
-    # Host networking, as the original ran: a database GUI must reach servers
-    # on this machine's loopback and on the LAN. The app therefore binds to
-    # 127.0.0.1 itself; pytincture refuses authenticated plain HTTP anywhere
-    # else anyway.
-    network_mode: host
-    userns_mode: "keep-id:uid=10001,gid=999"
     env_file:
       - .env
     environment:
-      - MONGUANA_DATA_DIR=/data
-      - MONGUANA_BIND=127.0.0.1
-      - MONGUANA_CANONICAL_ORIGIN=${MONGUANA_CANONICAL_ORIGIN:-http://127.0.0.1:8766}
+      MONGUANA_DATA_DIR: /data
+      # The browser-facing origin. Loopback only unless you put TLS in front
+      # (INSTALL.md, "Reaching Monguana from other machines").
+      MONGUANA_CANONICAL_ORIGIN: ${MONGUANA_CANONICAL_ORIGIN:-http://127.0.0.1:${MONGUANA_PORT:-8766}}
+      MONGUANA_ALLOWED_HOSTS: ${MONGUANA_ALLOWED_HOSTS:-}
+    ports:
+      # 127.0.0.1 on purpose: pytincture only serves authenticated plain HTTP
+      # to a loopback address, and it holds credentials for your databases.
+      - "127.0.0.1:${MONGUANA_PORT:-8766}:8766"
+    extra_hosts:
+      # "host.docker.internal" reaches MongoDB on this computer. Docker Desktop
+      # and Podman provide it already; this adds it on Docker Engine (Linux).
+      - "host.docker.internal:host-gateway"
     volumes:
-      - monguana_data:/data:U
+      - monguana-data:/data
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+  # A MongoDB to try Monguana with. Only started with --profile mongo.
+  # In Monguana, add a connection with host "mongo", port 27017, user "root"
+  # and MONGO_ROOT_PASSWORD from .env (default "change-me-too").
+  mongo:
+    profiles: ["mongo"]
+    image: docker.io/library/mongo:7
+    container_name: monguana-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-change-me-too}
+    volumes:
+      - monguana-mongo:/data/db
 
 volumes:
-  monguana_data:
+  monguana-data:
+    # Named explicitly so it is the same whatever folder this was cloned into.
+    name: monguana-data
+  monguana-mongo:
+    name: monguana-mongo

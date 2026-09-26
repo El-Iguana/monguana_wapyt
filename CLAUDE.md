@@ -60,8 +60,46 @@ uv sync
 ../wa_pytincture_widgetset/scripts/dev_wheel.sh appcode   # after ANY wapyt asset edit
 uv run python service.py                                  # http://127.0.0.1:8766/monguana
 uv run --group dev pytest -q
-scripts/podman-run.sh                                     # container "monguana"
+scripts/podman-run.sh      # dev container "monguana": host network, local wapyt
 ```
+
+Installing (users): **INSTALL.md** — `compose.yaml` on any OS with Docker or
+Podman, `compose.host-network.yaml` on Linux. `manage.py` is the admin CLI
+(`health`, `probe HOST PORT`, `users`, `reset-password`).
+
+### How the image is built (2026-09-26)
+
+The `Containerfile` builds from a plain clone: a stage clones wapyt at the
+pinned `WAPYT_REF` and builds **both** wheels — 0.1.0 for the server's Python
+(non-editable, for widgetset discovery) and 99.99.99 with a regenerated asset
+manifest for the browser (what `dev_wheel.sh` does). Before this, a fresh
+clone could not be built: the browser wheel is git-ignored and the build
+needed a `vendor-wheels/` folder the dev script made. **Bump `WAPYT_REF`**
+when Monguana starts needing newer wapyt.
+
+`scripts/podman-run.sh` replaces that source stage with the sibling checkout
+(`--build-context wapyt-src=…`, a filtered copy), so the dev container carries
+unmerged wapyt work.
+
+Traps found writing INSTALL.md, all measured:
+
+- **From a bridge network, `host.*.internal` does not reach the host's
+  127.0.0.1** (rootless Podman here; Docker Engine behaves the same). A
+  MongoDB bound to loopback — the usual install — is *connection refused*.
+  Hence the bundled `--profile mongo`, `compose.host-network.yaml`, and
+  `manage.py probe` to tell the cases apart.
+- **`MONGUANA_DATA_DIR` must not be in `.env`.** `--env-file` overrides the
+  image's `/data`, and a plain `docker run` then kept the database outside the
+  volume. Compose masked it (its `environment:` wins).
+- **The healthcheck sends the canonical host name.** Behind a proxy the app
+  accepts only its public name, so a check against 127.0.0.1 would report a
+  working deployment unhealthy. Podman ignores a Containerfile `HEALTHCHECK`
+  in OCI images anyway; it lives in the compose files.
+- **`docker build` wants `-f Containerfile`**; it only looks for `Dockerfile`.
+- **SELinux needs `:z`** on a bind mount the container writes to (the tar
+  backup): *Permission denied* otherwise. Only on a dedicated folder.
+- **`localhost` answers `400 Invalid host header`** — the troubleshooting
+  entry quotes it.
 
 After changing wapyt's *Python* wrappers: `uv sync --reinstall-package wapyt`.
 
