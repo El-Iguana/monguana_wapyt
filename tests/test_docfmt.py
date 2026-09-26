@@ -60,3 +60,8 @@ def test_column_state_merge_keeps_what_is_not_on_the_page():
     state = {"order": ["a", "b", "c"], "widths": {"c": 90}}
     merged = docfmt.merge_column_state(state, [{"id": "b", "width": 120}, {"id": "a", "width": None}])
     assert merged == {"order": ["b", "a", "c"], "widths": {"c": 90, "b": 120}}
+
+
+def test_int64_reads_as_a_plain_number():
+    assert docfmt.cell_text({"$numberLong": "5"}) == "5"
+    assert docfmt.type_label({"$numberLong": "5"}) == "Int64"

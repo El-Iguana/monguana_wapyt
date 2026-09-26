@@ -13,7 +13,7 @@ PRs or other branches). Numbering continues from the original's.
 | 11: Pipeline builder | Stage cards + Raw, with Run to here (phase 34) | — |
 | 24: Column width/order memory | Resize and reorder, saved per user on the server (phase 35) | — |
 | 13/16: Dump/restore progress console | Jobs with a progress console and Cancel (phase 36) | — |
-| Small items | | View mode not remembered; `system.*` collections always listed |
+| Small items | Remembered view mode, system-collection toggle, Int64 fidelity (phase 37) | — |
 
 ## Phase 31: code-editor spike — done (2026-09-25)
 
@@ -151,17 +151,31 @@ set of create options. See CLAUDE.md, *Index CRUD*.
   the job ended — `.mg-btn`'s `display:inline-flex` beats the `hidden`
   attribute (IguanaXterm's trap). `.mg-btn[hidden]` now hides.
 
-## Phase 37: small items
+## Phase 37: small items — done (2026-09-25)
 
-- Remember the view mode (table/JSON/tree) per collection.
-- A "show system collections" toggle.
-- The Int64 → Int32 change when saving an edited document — possibly by
-  opening the editor in canonical Extended JSON when a document holds an
-  Int64.
-- wapyt's modal close button hides the dialog but leaves it in the page;
-  make it close.
+- **The view mode is remembered** per collection and user (Table, JSON or
+  Tree), next to the column layout in `UiStateService`.
+- **System collections** (`system.views`, `system.profile`, …) are hidden by
+  default; "Show / hide system collections" on a server's or database's menu
+  toggles them, per user.
+- **Int64 keeps its type** through the display and the editor: tagged as
+  `{"$numberLong": "5"}` even when small, so saving an edited document no
+  longer turns it into an int32. Cells still read `5`.
+- **wapyt modals can dispose on close:** `ModalConfig(dispose_on_close=True)`
+  makes ×, Escape and a backdrop click remove the dialog. Opt-in, because
+  wAwesomeChat builds its modals once and reopens them — making × destroy
+  them would have broken it. `close()` now also removes the modal's
+  document-level Escape listener, which used to outlive every dialog.
+  Monguana opts in everywhere.
+
+## Beyond the original
+
+Not gaps — ideas the rewrite could take further:
+
+- Read an existing filter back into the query builder's rows (Apply replaces
+  the filter today).
+- Progress for exports, which stream but show no bar.
 
 ## Order
 
-31–36 are done: every gap from the original is closed. Phase 37's small items
-remain.
+31–37 are done: every gap from the original is closed.

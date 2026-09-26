@@ -96,6 +96,9 @@ def main() -> int:
         shop.click()
         orders = page.locator(".wapyt-tree-row[data-node-id$=':shop:orders']").first
         expect(orders).to_be_visible(timeout=15000)
+        # system.views is MongoDB's bookkeeping: hidden unless asked for.
+        system_views = page.locator(".wapyt-tree-row[data-node-id$=':shop:system.views']")
+        expect(system_views).to_have_count(0)
         orders.dblclick()
         view = page.locator(".mg-view").last
         rows = view.locator(".wapyt-datatable-table tbody tr[data-row-id]")
@@ -471,6 +474,21 @@ def main() -> int:
         violations = page.evaluate("window.__csp")
         problems.extend(f"CSP: {item}" for item in violations)
 
+        step("system collections: shown and hidden again from the server's menu")
+        server_row.click(button="right")
+        menu.locator("text=Show / hide system collections").click()
+        expect(system_views).to_have_count(1, timeout=5000)
+        server_row.click(button="right")
+        menu.locator("text=Show / hide system collections").click()
+        expect(system_views).to_have_count(0, timeout=5000)
+
+        step("a dialog closed with Escape is removed, not just hidden")
+        before = page.locator(".wapyt-modal-overlay").count()
+        page.locator("[data-top=shortcuts]").click()
+        expect(page.locator(".wapyt-modal-overlay")).to_have_count(before + 1)
+        page.keyboard.press("Escape")
+        expect(page.locator(".wapyt-modal-overlay")).to_have_count(before)
+
         step("the column layout comes back on a fresh page, and resets")
         again = context.new_page()
         again.on("pageerror", lambda exc: problems.append(f"layout pageerror: {exc}"))
@@ -490,6 +508,21 @@ def main() -> int:
         expect(again.locator("#mg-toast")).to_have_text("Column widths and order reset.", timeout=10000)
         order = header_order(reopened)
         assert order.index("number") < order.index("total"), order
+
+        # The view mode is remembered per collection too.
+        reopened.locator("[data-mg=view][data-view=json]").click()
+        again.wait_for_timeout(600)
+        again.reload(wait_until="domcontentloaded")
+        again.wait_for_selector(".mg-toolbar", timeout=180000)
+        again.locator(f".wapyt-tree-row:has-text('{PROFILE}')").first.click()
+        again.locator(".wapyt-tree-row[data-node-id$=':shop']").first.click()
+        again.locator(".wapyt-tree-row[data-node-id$=':shop:orders']").first.dblclick()
+        reopened = again.locator(".mg-view").last
+        expect(reopened.locator("[data-mg=view][data-view=json]")).to_have_attribute(
+            "aria-pressed", "true", timeout=15000)
+        expect(reopened.locator(".mg-json")).to_contain_text('"$oid"', timeout=15000)
+        reopened.locator("[data-mg=view][data-view=table]").click()  # leave it as found
+        again.wait_for_timeout(600)
         again.close()
 
         step("without the editor bundle, the plain text box still works")

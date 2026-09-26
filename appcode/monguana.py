@@ -266,6 +266,8 @@ class Monguana(MainWindow):
         self._views: dict[str, dict] = {}            # tab id -> view state
         self._tab_counter = 0
         self._me: dict = {}
+        # Per-user settings that follow the person (UiStateService "settings").
+        self._settings: dict = {"show_system": False}
         self._proxies: list = []
         # element id of the <textarea> an editor replaces -> {"editor", "host", "proxies"}
         self._editors: dict[str, dict] = {}
@@ -274,6 +276,7 @@ class Monguana(MainWindow):
         self._build_chrome()
         _spawn(self._load_identity(), "identity load")
         _spawn(self._reload_connections(), "connection list")
+        _spawn(self._load_settings(), "settings")
 
     # ------------------------------------------------------------------
     # Chrome
@@ -329,6 +332,8 @@ class Monguana(MainWindow):
                     TreeAction("dup_conn", "Duplicate", "mdi-content-copy", kinds=server),
                     TreeAction("delete_conn", "Delete connection", "mdi-delete",
                                kinds=server, danger=True),
+                    TreeAction("toggle_system", "Show / hide system collections",
+                               "mdi-eye-settings-outline", kinds=server + database),
                     TreeAction("refresh_db", "Refresh", "mdi-refresh", kinds=database),
                     TreeAction("new_coll", "Create collection…", "mdi-table-plus", kinds=database),
                     TreeAction("dump_db", "Dump database", "mdi-download", kinds=database),
@@ -538,6 +543,19 @@ class Monguana(MainWindow):
     # Identity and connections
     # ------------------------------------------------------------------
 
+    async def _load_settings(self) -> None:
+        result = await UiStateService().get_async("settings")
+        if result.get("ok") and result.get("value"):
+            self._settings.update(result["value"])
+            self._rebuild_tree()
+
+    async def _toggle_system_collections(self) -> None:
+        self._settings["show_system"] = not self._settings.get("show_system")
+        self._rebuild_tree()
+        shown = self._settings["show_system"]
+        self._toast(f"System collections are {'shown' if shown else 'hidden'}.")
+        await UiStateService().set_async("settings", self._settings)
+
     async def _load_identity(self) -> None:
         self._me = await UserService().me_async()
         label = _el("mg-user")
@@ -611,6 +629,10 @@ class Monguana(MainWindow):
         name = row["name"]
         node = _node_id("d", conn_id, name)
         colls = self._colls.get((conn_id, name))
+        if colls is not None and not self._settings.get("show_system"):
+            # system.views, system.profile, system.js…: MongoDB's own
+            # bookkeeping. Hidden unless asked for (right-click the server).
+            colls = [coll for coll in colls if not coll.get("system")]
         if colls is None:
             children = [self._note_item(node, self._errors.get(node) or (
                 "Loading…" if node in self._loading else "Expand to list collections"))]
@@ -734,6 +756,7 @@ class Monguana(MainWindow):
             "dup_conn": lambda: self._duplicate_connection(conn_id),
             "delete_conn": lambda: self._delete_connection(conn_id),
             "refresh_db": lambda: self._load_collections(conn_id, db),
+            "toggle_system": lambda: self._toggle_system_collections(),
             "new_coll": lambda: self._create_collection_dialog(conn_id, db),
             "restore_db": lambda: self._restore_dialog(conn_id, db),
             "drop_db": lambda: self._drop_database(conn_id, db),
@@ -815,7 +838,7 @@ class Monguana(MainWindow):
                 return
 
         modal = ModalWindow(ModalConfig(
-            title="Edit connection" if conn_id else "New connection", width=620, height=780,
+            dispose_on_close=True, title="Edit connection" if conn_id else "New connection", width=620, height=780,
         ))
         host = js.document.createElement("div")
         host.className = "mg-dialog"
@@ -973,7 +996,7 @@ class Monguana(MainWindow):
     # ------------------------------------------------------------------
 
     async def _create_database_dialog(self, conn_id: int) -> None:
-        modal = ModalWindow(ModalConfig(title="Create database", width=460, height=330))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Create database", width=460, height=330))
         form = Form(
             FormConfig(
                 submit_text="Create", cancel_text="Cancel",
@@ -1027,7 +1050,7 @@ class Monguana(MainWindow):
         await self._refresh_server(conn_id)
 
     async def _create_collection_dialog(self, conn_id: int, db: str) -> None:
-        modal = ModalWindow(ModalConfig(title=f"Create collection in {db}", width=480, height=420))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"Create collection in {db}", width=480, height=420))
         form = Form(
             FormConfig(
                 submit_text="Create", cancel_text="Cancel", columns=2,
@@ -1104,7 +1127,7 @@ class Monguana(MainWindow):
             ("Index size", format_bytes(result["total_index_size"])),
             ("Capped", "yes" if result.get("capped") else "no"),
         ] + [(f"  {name}", format_bytes(size)) for name, size in result["index_sizes"].items()]
-        modal = ModalWindow(ModalConfig(title=f"{db}.{coll}", width=440, height=420))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"{db}.{coll}", width=440, height=420))
         modal.body.innerHTML = '<table class="mg-kv">' + "".join(
             f"<tr><th>{_esc(label)}</th><td>{_esc(value)}</td></tr>" for label, value in rows
         ) + "</table>"
@@ -1115,7 +1138,7 @@ class Monguana(MainWindow):
     # ------------------------------------------------------------------
 
     async def _indexes_dialog(self, conn_id: int, db: str, coll: str) -> None:
-        modal = ModalWindow(ModalConfig(title=f"Indexes — {db}.{coll}", width=880, height=680))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"Indexes — {db}.{coll}", width=880, height=680))
         modal.body.innerHTML = (
             '<div class="mg-split">'
             '  <div class="mg-split-top" data-slot="table"></div>'
@@ -1279,7 +1302,7 @@ class Monguana(MainWindow):
         without the index while it builds.
         """
         name = index["name"]
-        modal = ModalWindow(ModalConfig(title=f"Edit index {name}", width=760, height=600))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"Edit index {name}", width=760, height=600))
         modal.body.innerHTML = (
             '<div class="mg-split">'
             '  <div data-slot="form"></div>'
@@ -1413,6 +1436,7 @@ class Monguana(MainWindow):
         _spawn(self._attach_view_editors(tid), "query editors")
         _spawn(self._sample_fields(tid), "field sample")
         _spawn(self._load_columns(tid), "column layout")
+        _spawn(self._load_view_mode(tid), "view mode")
         return tid
 
     def _view_html(self, tid: str, conn_name: str, db: str, coll: str, kind: str) -> str:
@@ -2387,7 +2411,7 @@ class Monguana(MainWindow):
         if not result.get("ok"):
             self._status(tid, result.get("error", "Explain failed"))
             return
-        modal = ModalWindow(ModalConfig(title="Query plan", width=760, height=600))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Query plan", width=760, height=600))
         facts = [
             ("Plan", result.get("summary", "")),
             ("Documents examined", result.get("docs_examined")),
@@ -2567,8 +2591,24 @@ class Monguana(MainWindow):
                 "info",
             )
 
-    def _show_as(self, tid: str, shown: str) -> None:
+    @staticmethod
+    def _view_key(view: dict) -> str:
+        return f"view:{view['conn']}:{view['db']}:{view['coll']}"
+
+    async def _load_view_mode(self, tid: str) -> None:
+        """Open a collection in the view (table/JSON/tree) last used for it."""
+        view = self._views.get(tid)
+        if view is None:
+            return
+        result = await UiStateService().get_async(self._view_key(view))
+        shown = ((result.get("value") or {}).get("shown")) if result.get("ok") else None
+        if tid in self._views and shown in ("json", "tree") and view["shown"] == "table":
+            self._show_as(tid, shown, remember=False)
+
+    def _show_as(self, tid: str, shown: str, remember: bool = True) -> None:
         view = self._views[tid]
+        if remember and shown != view["shown"]:
+            _spawn(UiStateService().set_async(self._view_key(view), {"shown": shown}), "remember view")
         view["shown"] = shown
         root = js.document.querySelector(f'.mg-view[data-tab="{tid}"]')
         for button in root.querySelectorAll('[data-mg="view"]'):
@@ -2746,7 +2786,7 @@ class Monguana(MainWindow):
         )
 
     async def _document_editor(self, tid: str, title: str, text: str, hint: str, save, done) -> None:
-        modal = ModalWindow(ModalConfig(title=title, width=820, height=680))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=title, width=820, height=680))
         modal.body.innerHTML = (
             '<div class="mg-editor">'
             f'  <div class="mg-editor-hint">{_esc(hint)}</div>'
@@ -2830,7 +2870,7 @@ class Monguana(MainWindow):
             area.selectionStart = area.selectionEnd = caret
 
     def _document_viewer(self, doc) -> None:
-        modal = ModalWindow(ModalConfig(title="Document (read-only)", width=760, height=600))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Document (read-only)", width=760, height=600))
         modal.body.innerHTML = f'<pre class="mg-json mg-fill">{_esc(to_pretty(doc))}</pre>'
         modal.show()
 
@@ -2909,7 +2949,7 @@ class Monguana(MainWindow):
         verb = "update" if is_update else "delete"
         empty_filter = not query["filter"].strip() or query["filter"].strip() == "{}"
 
-        modal = ModalWindow(ModalConfig(title=f"{mode} — preview", width=820, height=640))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"{mode} — preview", width=820, height=640))
         warning = (
             '<div class="mg-warn"><span class="mdi mdi-alert"></span> The filter is empty: '
             "this matches every document in the collection.</div>" if empty_filter else ""
@@ -2997,7 +3037,7 @@ class Monguana(MainWindow):
         schema = view["schema"]
         sampled = max(1, schema["sampled"])
 
-        modal = ModalWindow(ModalConfig(title=f"Fields — {view['coll']}", width=720, height=620))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"Fields — {view['coll']}", width=720, height=620))
         modal.body.innerHTML = (
             '<div class="mg-split">'
             f'<div class="mg-hint">From a random sample of {schema["sampled"]:,} document(s); rare fields '
@@ -3105,7 +3145,7 @@ class Monguana(MainWindow):
 
     async def _restore_dialog(self, conn_id: int, db: str) -> None:
         modal = ModalWindow(ModalConfig(
-            title="Restore dump" + (f" into {db}" if db else ""), width=560, height=540,
+            dispose_on_close=True, title="Restore dump" + (f" into {db}" if db else ""), width=560, height=540,
         ))
         host = js.document.createElement("div")
         host.className = "mg-dialog"
@@ -3223,7 +3263,7 @@ class Monguana(MainWindow):
         the summary (and the download, for a dump). Closing the console does
         not stop the job; a dump still downloads when it finishes.
         """
-        modal = ModalWindow(ModalConfig(title=title, width=720, height=560))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=title, width=720, height=560))
         modal.body.innerHTML = (
             '<div class="mg-console">'
             '<div class="mg-console-head"><span class="mg-console-state" data-state="running">'
@@ -3332,7 +3372,7 @@ class Monguana(MainWindow):
     # ------------------------------------------------------------------
 
     def _password_dialog(self) -> None:
-        modal = ModalWindow(ModalConfig(title="Change password", width=440, height=360))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Change password", width=440, height=360))
         form = Form(
             FormConfig(
                 submit_text="Change password", cancel_text="Cancel",
@@ -3375,7 +3415,7 @@ class Monguana(MainWindow):
         if not self._me.get("is_admin"):
             self._toast("Administrator access required.")
             return
-        modal = ModalWindow(ModalConfig(title="Users", width=760, height=560))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Users", width=760, height=560))
         modal.body.innerHTML = (
             '<div class="mg-split">'
             '  <div class="mg-split-top" data-slot="table"></div>'
@@ -3480,7 +3520,7 @@ class Monguana(MainWindow):
             ("Tab", "Indent, in the editor and pipeline boxes"),
             ("?", "This list"),
         )
-        modal = ModalWindow(ModalConfig(title="Keyboard shortcuts", width=520, height=440))
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Keyboard shortcuts", width=520, height=440))
         modal.body.innerHTML = '<table class="mg-kv">' + "".join(
             f"<tr><th><kbd>{_esc(key)}</kbd></th><td>{_esc(text)}</td></tr>" for key, text in rows
         ) + "</table>"

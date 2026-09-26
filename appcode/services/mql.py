@@ -553,12 +553,26 @@ def to_display(value: Any) -> Any:
 
     Relaxed keeps ordinary numbers and strings readable while ObjectIds,
     dates and decimals stay tagged (``{"$oid": …}``), so an edited document
-    parses back with its types. One loss: an Int64 small enough to be an int32
-    comes back as a plain number and is saved as int32.
+    parses back with its types. **Int64 is tagged too** (``{"$numberLong":
+    "5"}``): relaxed mode writes a small one as a plain number, which then
+    parsed back — and was saved — as an int32.
     """
     import json
 
-    return json.loads(json_util.dumps(value, json_options=_JSON_OPTIONS), object_hook=_uuid_hook)
+    return json.loads(
+        json_util.dumps(_tag_int64(value), json_options=_JSON_OPTIONS), object_hook=_uuid_hook
+    )
+
+
+def _tag_int64(value: Any) -> Any:
+    """Int64 -> {"$numberLong": "…"} at any depth; everything else as is."""
+    if isinstance(value, Int64):
+        return {"$numberLong": str(int(value))}
+    if isinstance(value, dict):
+        return {key: _tag_int64(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_tag_int64(child) for child in value]
+    return value
 
 
 def _uuid_hook(obj: dict) -> dict:

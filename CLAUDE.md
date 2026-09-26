@@ -142,8 +142,9 @@ verbatim for edit/delete, so string, numeric, UUID and compound ids all work.
 The original ran `ObjectId(doc_id)` on whatever came back and could not touch
 any other kind of `_id`.
 
-One known loss: relaxed EJSON writes a small Int64 as a plain number, so
-editing such a document saves it back as Int32.
+Int64 is tagged even when small (`{"$numberLong": "5"}`, `mql._tag_int64`):
+relaxed EJSON writes it as a plain number, which parsed back — and was saved —
+as Int32 (fixed in ROADMAP phase 37). The table and tree still show `5`.
 
 UUIDs are "standard" (subtype 4) everywhere — in `mql`'s JSON options and on
 every `MongoClient` (`uuidRepresentation="standard"`). pymongo's default
@@ -243,9 +244,14 @@ results, `check()` for cooperative cancel); the page polls
   `_sync_table_sort` moves the caret to match a sort typed by hand, with a
   guard flag because `DataTable.sort()` emits `sort` itself.
 - **Modals are closed, not hidden.** wapyt's `hide()` leaves the overlay in the
-  DOM; `close()` removes it. (Its × button still only hides — see wapyt's
-  rough edges.) wapyt's modal also sets no font, hence the `.wapyt-modal` rule
-  in `_CSS`.
+  DOM; `close()` removes it. Every modal here is built with
+  `ModalConfig(dispose_on_close=True)` (wapyt, 2026-09-25), so ×, Escape and a
+  backdrop click remove it too. wapyt's modal also sets no font, hence the
+  `.wapyt-modal` rule in `_CSS`.
+- **Per-user settings and view state** go through `UiStateService`:
+  `settings` (`show_system`: `system.*` collections, hidden by default,
+  toggled from a server's or database's menu), `columns:<conn>:<db>:<coll>`
+  (phase 35) and `view:<conn>:<db>:<coll>` (the Table/JSON/Tree choice).
 
 ### Index CRUD (added 2026-09-25)
 
@@ -372,8 +378,9 @@ in the background (`_sample_fields`) so completions offer field paths at once.
 
 ## Not built yet
 
-Every gap from the original is closed (ROADMAP phases 31–36). ROADMAP.md
-phase 37 lists the small items that remain.
+Every gap from the original is closed (ROADMAP phases 31–37). ROADMAP.md
+lists what the rewrite still does not do: reading a filter back into the
+builder, and a live progress bar for export.
 
 ## Conventions
 

@@ -201,3 +201,15 @@ def test_uuids_display_readably_and_round_trip():
     shown = mql.to_display({"u": value})
     assert shown == {"u": {"$uuid": "12345678-1234-5678-1234-567812345678"}}
     assert mql.parse(json.dumps(shown)) == {"u": value}
+
+
+def test_int64_keeps_its_type_through_display_and_edit():
+    """Relaxed EJSON wrote a small Int64 as a plain number: saved back as int32."""
+    import json
+
+    doc = {"n": Int64(5), "big": Int64(2**40), "i": 5, "nested": [{"x": Int64(-1)}]}
+    shown = mql.to_display(doc)
+    assert shown["n"] == {"$numberLong": "5"} and shown["i"] == 5
+    assert shown["nested"][0]["x"] == {"$numberLong": "-1"}
+    back = mql.parse(json.dumps(shown))
+    assert back == doc and type(back["n"]) is Int64 and type(back["i"]) is int
