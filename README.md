@@ -85,36 +85,34 @@ panel, and password changes.
 view, `/` focuses the filter, `N` inserts, `I` opens indexes, `Ctrl+S` saves in
 the editor, `?` lists them all.
 
-## Running
+## Installing
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/). wapyt is not on
-PyPI, so it is expected as a sibling checkout at `../wa_pytincture_widgetset`.
+Monguana runs as a container, with **Docker or Podman on Windows, macOS or
+Linux**. **[INSTALL.md](INSTALL.md)** has the full instructions — engines,
+reaching a MongoDB on the same computer, HTTPS for other machines, backups,
+troubleshooting. In short:
 
-```bash
-cp .env.example .env          # set MONGUANA_ADMIN_PASS
+```sh
+git clone https://github.com/El-Iguana/monguana_wapyt.git
+cd monguana_wapyt
+cp .env.example .env              # set MONGUANA_ADMIN_PASS
+docker compose up -d --build      # or: podman compose up -d --build
+```
+
+Then open <http://127.0.0.1:8766/monguana> — `127.0.0.1`, not `localhost` —
+and sign in as `admin`.
+
+### Running from source (development)
+
+Requires Python 3.13+, [uv](https://docs.astral.sh/uv/) and the wapyt
+checkout next to this one at `../wa_pytincture_widgetset`:
+
+```sh
+cp .env.example .env
 uv sync
 ../wa_pytincture_widgetset/scripts/dev_wheel.sh appcode   # the wheel the browser installs
 uv run python service.py
 ```
-
-Open <http://127.0.0.1:8766/monguana> and sign in as `admin` with the password
-from `.env`. Use `127.0.0.1`, not `localhost`: pytincture only serves
-authenticated plain HTTP on a literal loopback address.
-
-### Podman
-
-```bash
-scripts/podman-run.sh
-```
-
-Builds `localhost/monguana`, and runs it as `monguana` with host networking so
-profiles can reach MongoDB on this machine or the LAN. The app itself listens
-on 127.0.0.1 only. Data lives in the `monguana_data` volume.
-
-### Behind TLS
-
-Set `MONGUANA_CANONICAL_ORIGIN=https://mongo.example.com` and
-`MONGUANA_ALLOWED_HOSTS=mongo.example.com`, and terminate TLS in front.
 
 ## Configuration
 
@@ -124,7 +122,8 @@ Set `MONGUANA_CANONICAL_ORIGIN=https://mongo.example.com` and
 | `MONGUANA_DATA_DIR` | `./data` | SQLite database, `secret.key`, `session.key` |
 | `MONGUANA_SECRET_KEY` | generated | Fernet key for stored passwords — back it up |
 | `MONGUANA_SESSION_SECRET` | generated | Cookie signing secret |
-| `PORT` | `8766` | Listen port |
+| `MONGUANA_PORT` | `8766` | Port on the host, with compose |
+| `PORT` | `8766` | Listen port of the service itself |
 | `MONGUANA_BIND` | `0.0.0.0` | Listen address (the container sets `127.0.0.1`) |
 | `MONGUANA_CANONICAL_ORIGIN` | `http://127.0.0.1:PORT` | The one origin the app is reached on |
 | `MONGUANA_ALLOWED_HOSTS` | `127.0.0.1` | Host names accepted, comma-separated |

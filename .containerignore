@@ -12,3 +12,5 @@ tests/
 .pytest_cache/
 data/
 tools/
+appcode/wapyt-*.whl
+vendor-wheels/
