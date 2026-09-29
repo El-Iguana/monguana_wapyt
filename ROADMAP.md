@@ -178,9 +178,20 @@ Linux: the bundle builds; the launcher's first run, port fallback, single
 instance, `--status`/`--stop`/`--check`, browser sign-in with the generated
 password, and `--reset-password`.
 
-**Still open:** the first run of the Windows CI job (installer compile,
-silent install, `--check`, uninstall), and a hand check on a Windows desktop
-of the tray icon, the first-run message box and the Start-menu shortcuts.
+**Passing on Windows CI** (`windows-latest`, 2026-09-29): unit tests, the
+installer build, silent install, the installed app serving its login page,
+background start, `.js` served as `text/javascript` against a real Windows
+registry, `--stop`, and silent uninstall keeping the data. Its first run found
+pytincture unable to read any contained file on Windows; `pytincture_compat.py`
+works around it (see CLAUDE.md).
+
+**Still open:**
+
+- A hand check on a Windows desktop: the tray icon, the first-run message box
+  and the Start-menu shortcuts.
+- The upstream pytincture fix (branch `fix/windows-contained-file-open`,
+  ready locally, parked: no push access to `pytincture/pytincture`). Once a
+  release has it, bump the pin and delete `pytincture_compat.py`.
 
 A `setup.exe` that runs Monguana on Windows **without Docker and without
 HTTPS**, for people who only want it on their own machine.
