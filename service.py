@@ -65,6 +65,10 @@ def register_mime_types() -> None:
 
 register_mime_types()
 
+import pytincture_compat  # noqa: E402
+
+pytincture_compat.apply()
+
 from pytincture import PytinctureConfig, create_app  # noqa: E402
 from pytincture.backend.middleware import RequestBodyLimitMiddleware  # noqa: E402
 

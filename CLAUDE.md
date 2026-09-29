@@ -27,6 +27,7 @@ The original Monguana is not checked out locally; clone it to compare.
 
 ```
 service.py                  # ASGI entrypoint: config, hooks, routes, static mount
+pytincture_compat.py        # pytincture workarounds per platform (Windows: see phase 38)
 appcode/                    # pytincture modules_path
   monguana.py               #   browser UI (Pyodide). APP_ENTRYPOINT lives here.
   services/
@@ -119,6 +120,18 @@ Tests: `tests/test_launcher.py`; by hand on Linux with
 
 Traps, found building it:
 
+- **pytincture could not read a single contained file on Windows**, so no
+  BFF call could work. `safe_paths._open_relative_nofollow` opens the root
+  *directory* with `os.open()` to walk the path through directory descriptors;
+  Windows refuses with `PermissionError`, before the function's fallback (it
+  only catches `NotImplementedError`/`TypeError`) can apply.
+  `pytincture_compat.apply()` (called by `service.py` and `tests/conftest.py`)
+  takes that fallback up front where `os.open` lacks `dir_fd`: pytincture's
+  own `resolve_contained_path`, then open. Found by the first Windows CI run;
+  `tests/test_pytincture_compat.py` forces it on Linux. **Belongs upstream in
+  pytincture**; drop the patch once a release has it.
+- **Tests read source with `read_text()` and no encoding**, which is cp1252
+  on Windows: always pass `encoding="utf-8"`.
 - **pip evaluates environment markers for the build machine, even with
   `--platform`**: it tried to install `uvloop` for Windows. `uv pip install
   --python-platform x86_64-pc-windows-msvc` evaluates them for the target.

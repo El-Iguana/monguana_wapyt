@@ -41,7 +41,7 @@ def test_the_client_pool_is_the_same_pool_on_every_call():
 def test_no_bff_module_keeps_mutable_state_at_module_level():
     suspicious = []
     for path in (APPCODE / "services").glob("*.py"):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         exports_bff = any(
             isinstance(node, ast.ClassDef)
             and any(getattr(d, "id", None) == "backend_for_frontend" for d in node.decorator_list)
@@ -62,6 +62,6 @@ def test_no_bff_module_keeps_mutable_state_at_module_level():
 def test_bff_modules_use_absolute_imports():
     """pytincture imports BFF modules by path: `from .x import` fails at call time."""
     for path in (APPCODE / "services").glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.ImportFrom):
                 assert node.level == 0, f"{path.name}: relative import"
