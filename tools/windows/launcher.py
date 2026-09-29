@@ -7,7 +7,8 @@ and points the Start-menu shortcut at it through ``pythonw.exe``. It:
 
 * keeps one instance: a second launch just opens the browser on the first;
 * picks port 8766, or the next free one up to 8799, on 127.0.0.1 only;
-* on the first run, generates the admin password and shows it once;
+* on the first run, says how to sign in: ``admin`` / ``change_me``, which
+  the app then asks you to change on every load until you do;
 * starts ``service.py`` as a child process, logging to ``logs\\server.log``;
 * opens ``http://127.0.0.1:<port>/monguana`` in the default browser —
   never ``localhost``, which pytincture answers with 400;
@@ -33,7 +34,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import secrets
 import socket
 import subprocess
 import sys
@@ -75,7 +75,7 @@ def message(text: str, title: str = "Monguana", error: bool = False) -> None:
         import ctypes
 
         # MB_OK | MB_SETFOREGROUND | MB_TOPMOST, plus the icon. A message box
-        # also copies its text with Ctrl+C, which is how the password leaves it.
+        # also copies its text with Ctrl+C.
         flags = 0x0 | 0x10000 | 0x40000 | (0x10 if error else 0x40)
         ctypes.windll.user32.MessageBoxW(None, text, title, flags)
         return
@@ -166,7 +166,7 @@ def server_python() -> str:
     return str(exe)
 
 
-def start_server(port: int, admin_password: str | None) -> subprocess.Popen:
+def start_server(port: int) -> subprocess.Popen:
     LOGS.mkdir(parents=True, exist_ok=True)
     log = LOGS / "server.log"
     if log.exists():
@@ -186,11 +186,10 @@ def start_server(port: int, admin_password: str | None) -> subprocess.Popen:
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
     })
-    if admin_password:
-        env["MONGUANA_ADMIN_USER"] = "admin"
-        env["MONGUANA_ADMIN_PASS"] = admin_password
-    else:
-        env.pop("MONGUANA_ADMIN_PASS", None)
+    # The first account gets the default password (change_me), not one
+    # left in this machine's environment by something else.
+    env.pop("MONGUANA_ADMIN_USER", None)
+    env.pop("MONGUANA_ADMIN_PASS", None)
     flags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
     with open(log, "ab") as out:
         return subprocess.Popen(
@@ -233,8 +232,7 @@ def launch() -> tuple[subprocess.Popen, int] | None:
         message(f"No free port between {FIRST_PORT} and {LAST_PORT} on 127.0.0.1.", error=True)
         return None
     first_run = not (DATA / "monguana.db").exists()
-    password = secrets.token_urlsafe(12) if first_run else None
-    server = start_server(port, password)
+    server = start_server(port)
     if not wait_until_up(server, port):
         stop_server(server)
         message(
@@ -243,13 +241,13 @@ def launch() -> tuple[subprocess.Popen, int] | None:
         )
         return None
     write_state(port, server.pid)
-    if password:
+    if first_run:
         message(
-            "Monguana created your administrator account.\n\n"
-            f"Username:  admin\nPassword:  {password}\n\n"
-            "This is the only time the password is shown. Press Ctrl+C to copy "
-            "this message, then change the password from Monguana's Password "
-            "button. Lost it? Use \"Reset Monguana password\" in the Start menu.",
+            "Monguana is ready. Sign in with:\n\n"
+            "Username:  admin\nPassword:  change_me\n\n"
+            "Monguana will ask you to choose your own password each time it "
+            "loads until you do. Forgot it later? Use \"Reset Monguana "
+            "password\" in the Start menu.",
             title="Monguana — first run",
         )
     return server, port

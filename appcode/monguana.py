@@ -568,6 +568,45 @@ class Monguana(MainWindow):
         if label:
             suffix = " · admin" if self._me.get("is_admin") else ""
             label.textContent = f"{self._me.get('username', '')}{suffix}"
+        if self._me.get("must_change_password"):
+            self._password_nag()
+
+    def _password_nag(self) -> None:
+        """
+        Shown on every load while the password is one this person did not
+        choose: the install default (change_me) or one an administrator set.
+        """
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Change your password",
+                                        width=480, height=250))
+        modal.body.innerHTML = (
+            '<div class="mg-nag">'
+            '<p><span class="mdi mdi-shield-alert-outline"></span> '
+            "You are still using a password you did not choose: the default "
+            "<code>change_me</code>, or one an administrator set for you. Anyone "
+            "who knows it can sign in as you and use your saved connections.</p>"
+            "<p>Monguana will ask again each time it loads until you change it.</p>"
+            '<div class="mg-editor-actions">'
+            '<button type="button" class="mg-btn" data-nag="later">Later</button>'
+            '<button type="button" class="mg-btn mg-primary" data-nag="change">'
+            '<span class="mdi mdi-key"></span><span>Change password</span></button>'
+            "</div></div>"
+        )
+
+        def _on_click(event) -> None:
+            which = event.target.closest("[data-nag]")
+            if not which:
+                return
+            modal.close()
+            if str(which.getAttribute("data-nag")) == "change":
+                self._password_dialog()
+
+        proxy = create_proxy(_on_click)
+        self._proxies.append(proxy)
+        modal.body.addEventListener("click", proxy)
+        modal.show()
+        focus = modal.body.querySelector('[data-nag="change"]')
+        if focus:
+            focus.focus()
 
     async def _reload_connections(self) -> None:
         self._conns = await ConnectionService().list_async()
@@ -3414,6 +3453,7 @@ class Monguana(MainWindow):
                         form.set_error(None, result.get("error", "Could not change"))
                     return
                 modal.close()
+                self._me["must_change_password"] = False
                 self._toast("Password changed.")
             finally:
                 form.set_busy(False)
@@ -3726,6 +3766,11 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .mg-editor-text:focus{outline:none;border-color:var(--mg-accent);}
 .mg-editor-error{padding:6px 10px;border-radius:6px;background:#2a1215;color:#fca5a5;
   font:12.5px ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;}
+.mg-nag{display:flex;flex-direction:column;gap:10px;padding:4px 2px;font:13px/1.55 system-ui,sans-serif;color:#cbd5f5;}
+.mg-nag p{margin:0;}
+.mg-nag .mdi-shield-alert-outline{color:#fbbf24;font-size:17px;vertical-align:-2px;}
+.mg-nag code{padding:1px 5px;border-radius:4px;background:var(--mg-panel);color:#fde68a;}
+.mg-nag .mg-editor-actions{margin-top:6px;}
 .mg-editor-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 0 auto;}
 .mg-editor-keys{margin-right:auto;color:var(--mg-dim);font-size:11.5px;}
 .mg-split{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;}

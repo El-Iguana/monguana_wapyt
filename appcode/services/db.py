@@ -142,6 +142,10 @@ CREATE TABLE IF NOT EXISTS users (
     username   TEXT    NOT NULL UNIQUE COLLATE NOCASE,
     pw_hash    TEXT    NOT NULL,
     is_admin   INTEGER NOT NULL DEFAULT 0,
+    -- 1 while the password is one this person did not choose: the install
+    -- default, or one an administrator set. The app asks them to change it
+    -- on every load until they do.
+    must_change_pw INTEGER NOT NULL DEFAULT 0,
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -181,25 +185,51 @@ CREATE TABLE IF NOT EXISTS ui_state (
 """
 
 
+# The first account's password when MONGUANA_ADMIN_PASS is not set. Easy on
+# purpose: the account is flagged, and the app asks for a new password on
+# every load until it is changed. "changeme" was the default before.
+DEFAULT_ADMIN_PASSWORD = "change_me"
+_KNOWN_DEFAULTS = (DEFAULT_ADMIN_PASSWORD, "changeme")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Columns added after a database was first created."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "must_change_pw" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN must_change_pw INTEGER NOT NULL DEFAULT 0")
+        # Accounts created before the flag existed: flag any still on a
+        # known default password.
+        for row in conn.execute("SELECT id, pw_hash FROM users").fetchall():
+            if any(verify_password(known, row["pw_hash"]) for known in _KNOWN_DEFAULTS):
+                conn.execute("UPDATE users SET must_change_pw = 1 WHERE id = ?", (row["id"],))
+
+
 def init_db() -> None:
-    """Create the schema and seed the first admin."""
+    """Create the schema, migrate it, and seed the first admin."""
     with get_db() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
 
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             admin_user = os.environ.get("MONGUANA_ADMIN_USER", "admin")
-            admin_pass = os.environ.get("MONGUANA_ADMIN_PASS", "changeme")
+            from_env = os.environ.get("MONGUANA_ADMIN_PASS", "")
+            admin_pass = from_env or DEFAULT_ADMIN_PASSWORD
+            # Flagged either way: nobody chose this password in the app.
             conn.execute(
-                "INSERT INTO users (username, pw_hash, is_admin) VALUES (?, ?, 1)",
+                "INSERT INTO users (username, pw_hash, is_admin, must_change_pw) VALUES (?, ?, 1, 1)",
                 (admin_user, hash_password(admin_pass)),
             )
+            source = (
+                "the password from MONGUANA_ADMIN_PASS" if from_env
+                else f"the default password {DEFAULT_ADMIN_PASSWORD!r}"
+            )
             banner = "=" * 58
-            # The password is deliberately not echoed into the log.
+            # A password from the environment is deliberately not echoed.
             print(
                 f"\n{banner}\n"
                 f"  Created the initial admin account: {admin_user!r}\n"
-                f"  Using MONGUANA_ADMIN_PASS from the environment.\n"
-                f"  Change it from the UI before exposing this service.\n"
+                f"  with {source}.\n"
+                f"  Monguana asks for a new one on every load until it is changed.\n"
                 f"{banner}\n",
                 flush=True,
             )

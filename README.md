@@ -118,7 +118,7 @@ uv run python service.py
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MONGUANA_ADMIN_USER` / `_PASS` | `admin` / `changeme` | First account, created when there are no users |
+| `MONGUANA_ADMIN_USER` / `_PASS` | `admin` / `change_me` | First account, created when there are no users; asked to change its password on every load until it does |
 | `MONGUANA_DATA_DIR` | `./data` | SQLite database, `secret.key`, `session.key` |
 | `MONGUANA_SECRET_KEY` | generated | Fernet key for stored passwords — back it up |
 | `MONGUANA_SESSION_SECRET` | generated | Cookie signing secret |
