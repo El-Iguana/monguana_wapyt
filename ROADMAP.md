@@ -168,6 +168,68 @@ set of create options. See CLAUDE.md, *Index CRUD*.
   document-level Escape listener, which used to outlive every dialog.
   Monguana opts in everywhere.
 
+## Phase 38: native Windows install, browser only — planned (2026-09-29)
+
+A `setup.exe` that runs Monguana on Windows **without Docker and without
+HTTPS**, for people who only want it on their own machine.
+
+**Starting point.** Monguana and IguanaXterm both already run on Windows
+under **Docker Desktop** (tested by hand, 2026-09-29), so the compose route in
+INSTALL.md stays the answer for anyone who has Docker. This phase is for
+machines without it.
+
+**Why no HTTPS is needed.** pytincture already serves an authenticated app
+over plain HTTP on a literal loopback address. The install binds to
+`127.0.0.1` and opens `http://127.0.0.1:<port>/monguana`, never `localhost`,
+which answers `400 Invalid host header`.
+
+**Why it should port.** Nothing loads from a CDN: Pyodide 0.29.3, the MDI
+font, the CodeMirror bundle and the wapyt wheel are all served by the app
+itself, so it works offline. The server's dependencies (uvicorn/FastAPI,
+pymongo, bcrypt, cryptography, SQLite) all have Windows wheels. The only
+POSIX-only code found is pytincture's `resource` process limits, which already
+skip themselves on Windows.
+
+**Scope:**
+
+- **Browser only.** The launcher opens the default browser. A desktop window
+  (pywebview/WebView2) is out of scope for now.
+- **No MongoDB bundled**, in the installer or in the repo for testing. Users
+  point Monguana at their own server; a native install reaches
+  `127.0.0.1:27017` directly, without the bridge-network workarounds the
+  containers need.
+- **The login stays.** On a shared machine it stops other programs or users
+  from reaching your saved connections through the port.
+
+**Work:**
+
+1. **Launcher** (`monguana-launch`, Python): pick port 8766 or the next free
+   one, start `service.py` bound to 127.0.0.1, wait for the health check, open
+   the browser. Tray icon with Open / Quit; a second launch just opens the
+   browser on the running instance.
+2. **First run:** data in `%LOCALAPPDATA%\Monguana` (`MONGUANA_DATA_DIR`).
+   Ask for the admin password, or generate one and show it once, instead of
+   `.env`. The Fernet key is generated per install. `manage.py
+   reset-password` gets a Start-menu shortcut.
+3. **Packaging:** a pinned embeddable CPython with the dependencies
+   pre-installed (or a PyInstaller build), wrapped by Inno Setup:
+   Start-menu entries, an uninstaller, and a choice to keep or remove the data
+   folder on uninstall. Optional: start at login.
+4. **Windows audit:** paths in dump/restore and job files (`pathlib`, no
+   `/tmp`), SQLite locking, and file handles closed before a job's file is
+   deleted, since Windows refuses to delete an open file.
+5. **CI:** a `windows-latest` GitHub Actions job on each release tag that runs
+   the unit tests, builds the installer, installs it silently, and checks that
+   the app starts and serves its login page. The full Playwright smoke test is
+   run by hand against a MongoDB the tester supplies (`SMOKE_MONGO_HOST`),
+   since no MongoDB ships with the repo.
+6. **INSTALL.md:** a "Windows without Docker" section, including the unsigned
+   installer's SmartScreen warning. Code signing is a later decision; it needs
+   a certificate.
+
+**Later, not this phase:** a desktop window instead of a browser tab; the
+same launcher for IguanaXterm, which shares the service wiring.
+
 ## Beyond the original
 
 Not gaps — ideas the rewrite could take further:
@@ -179,3 +241,5 @@ Not gaps — ideas the rewrite could take further:
 ## Order
 
 31–37 are done: every gap from the original is closed.
+
+38 (native Windows install) is next.

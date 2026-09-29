@@ -436,7 +436,8 @@ in the background (`_sample_fields`) so completions offer field paths at once.
 
 Every gap from the original is closed (ROADMAP phases 31–37). ROADMAP.md
 lists what the rewrite still does not do: reading a filter back into the
-builder, and a live progress bar for export.
+builder, and a live progress bar for export. Phase 38 plans a native
+Windows installer (no Docker, no HTTPS, browser only).
 
 ## Conventions
 
