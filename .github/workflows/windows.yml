@@ -119,6 +119,9 @@ jobs:
           Start-Sleep -Seconds 2
           & "$app\python\python.exe" "$app\app\monguana_launcher.py" --status
           if ($LASTEXITCODE -eq 0) { throw "still running after --stop" }
+          # Actions ends a pwsh step with the last program's exit code, and that
+          # --status just reported "not running" (1), which is the point.
+          exit 0
 
       - name: Uninstall silently
         run: |
