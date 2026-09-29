@@ -158,7 +158,7 @@ Open `.env` in any text editor and set, at least:
 
 | Setting | What it does |
 |---|---|
-| `MONGUANA_ADMIN_PASS` | Password of the first account, `admin`. **Used only on the very first start**, when there are no accounts yet; change it later from the app. |
+| `MONGUANA_ADMIN_PASS` | Password of the first account, `admin`. **Used only on the very first start**, when there are no accounts yet. Left empty, it is `change_me`. Either way, Monguana asks for a new password each time it loads until you change it from the app. |
 | `MONGUANA_ADMIN_USER` | Its name, if not `admin`. |
 | `MONGUANA_PORT` | The port on this computer, default `8766`. Change it if 8766 is taken. |
 
@@ -511,10 +511,11 @@ installed.
   outside your computer can reach it. Use `127.0.0.1` exactly, not
   `localhost`, which answers *400 Invalid host header*.
 
-**First start:** Monguana creates the `admin` account and shows its
-generated password **once**, in a message box. Press **Ctrl+C** on the box to
-copy it, sign in, then change it with the **Password** button. Lost it? Run
-**Reset Monguana password** from the Start menu.
+**First start:** sign in as **`admin`** with password **`change_me`** (a
+message box reminds you). Monguana then asks you to choose your own password,
+and keeps asking each time it loads until you do; **Change password** in that
+reminder, or the **Password** button, does it. Forgot it later? Run **Reset
+Monguana password** from the Start menu.
 
 **MongoDB is not included.** Point Monguana at your own server. A MongoDB on
 the same computer is simply `127.0.0.1`, port `27017`: none of the container
