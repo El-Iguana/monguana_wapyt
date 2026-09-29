@@ -71,7 +71,7 @@ def type_label(value: Any) -> str:
     if isinstance(value, bool):
         return "Boolean"
     if isinstance(value, int):
-        return "Int"
+        return "Int32"
     if isinstance(value, float):
         return "Double"
     if isinstance(value, str):
@@ -192,8 +192,92 @@ def union_columns(docs: Iterable[dict], limit: int = 60) -> list[str]:
 
 
 def to_pretty(value: Any) -> str:
-    """Indented relaxed Extended JSON — what the editor and JSON view show."""
+    """Indented relaxed Extended JSON — the JSON view and Copy as JSON."""
     return json.dumps(value, indent=2, ensure_ascii=False)
+
+
+_INT32 = range(-(2**31), 2**31)
+
+
+def _shell_scalar(value: Any) -> str | None:
+    """
+    One value in mongo shell syntax with its type spelled out, or ``None``
+    to leave it as Extended JSON (which the server's parser also reads).
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        # Plain ints are Int32 here: to_display tags every Int64.
+        return f"NumberInt({value})" if value in _INT32 else str(value)
+    if isinstance(value, float):
+        text = json.dumps(value)
+        # A double keeps its point, so 5.0 does not come back as an Int32.
+        return text if any(ch in text for ch in ".eE") else text + ".0"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    tagged = tagged_type(value)
+    if tagged == "ObjectId":
+        return f"ObjectId({json.dumps(value['$oid'])})"
+    if tagged == "Date" and isinstance(value["$date"], str):
+        return f"ISODate({json.dumps(value['$date'])})"
+    if tagged == "Decimal128":
+        return f"NumberDecimal({json.dumps(value['$numberDecimal'])})"
+    if tagged == "Int64":
+        return f"NumberLong({json.dumps(value['$numberLong'])})"
+    if tagged == "Int32":
+        return f"NumberInt({value['$numberInt']})"
+    if tagged == "UUID":
+        text = value.get("$uuid") or _uuid_text(value)
+        return f"UUID({json.dumps(text)})" if text else None
+    if tagged == "Timestamp":
+        body = value["$timestamp"]
+        return f"Timestamp({int(body.get('t', 0))}, {int(body.get('i', 0))})"
+    if tagged in ("MinKey", "MaxKey"):
+        return f"{tagged}()"
+    if tagged == "Regex":
+        body = value["$regularExpression"]
+        pattern, options = body.get("pattern", ""), body.get("options", "")
+        # A literal cannot hold a newline or a bare slash, nor flags the
+        # parser does not take; those stay tagged.
+        if "/" in pattern or "\n" in pattern or set(options) - set("imxs"):
+            return None
+        return f"/{pattern}/{options}"
+    return None
+
+
+def to_shell(value: Any, indent: int = 2) -> str:
+    """
+    Indented mongo shell syntax, Studio 3T style: ``ObjectId("…")``,
+    ``ISODate("…")``, ``NumberInt(1)``, ``NumberLong("5")``, ``1.0`` for a
+    double — what the document editor shows, so every value's BSON type is
+    visible and survives the save. Anything without a shell spelling (binary,
+    code, far-out dates, NaN) stays Extended JSON.
+    """
+    def walk(item: Any, depth: int) -> str:
+        scalar = _shell_scalar(item)
+        if scalar is not None:
+            return scalar
+        pad, inner = " " * (indent * depth), " " * (indent * (depth + 1))
+        if tagged_type(item):
+            return json.dumps(item, ensure_ascii=False)
+        if isinstance(item, dict):
+            if not item:
+                return "{}"
+            body = ",\n".join(
+                f"{inner}{json.dumps(str(key), ensure_ascii=False)}: {walk(child, depth + 1)}"
+                for key, child in item.items()
+            )
+            return "{\n" + body + "\n" + pad + "}"
+        if isinstance(item, list):
+            if not item:
+                return "[]"
+            body = ",\n".join(f"{inner}{walk(child, depth + 1)}" for child in item)
+            return "[\n" + body + "\n" + pad + "]"
+        return json.dumps(item, ensure_ascii=False)
+
+    return walk(value, 0)
 
 
 def count_nodes(value: Any, cap: int = 100_000) -> int:

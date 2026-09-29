@@ -204,6 +204,11 @@ def main() -> int:
         shot(page, "04-tree")
         view.locator("[data-mg=view][data-view=table]").click()
 
+        step("each table cell carries its BSON type icon")
+        first_icon = rows.first.locator("td[data-column-id=_id] .wapyt-datatable-cell-icon")
+        expect(first_icon).to_have_attribute("title", "ObjectId")
+        assert rows.first.locator(".wapyt-datatable-cell-icon[title=Decimal128]").count() == 1
+
         step("edit a document in the code editor, keep its types")
         rows.first.dblclick()
         editor = page.locator(".wapyt-modal-overlay").last
@@ -211,7 +216,10 @@ def main() -> int:
         expect(doc_box).to_be_visible(timeout=10000)
         mirror = editor.locator(".mg-editor-text")  # hidden, the source of truth
         text = mirror.input_value()
-        assert '"$date"' in text and '"$numberDecimal"' in text
+        # Typed shell syntax, Studio 3T style, not Extended JSON.
+        for typed in ('ObjectId("', 'ISODate("', 'NumberDecimal("', 'NumberInt(', 'UUID("'):
+            assert typed in text, typed
+        assert '"$date"' not in text
         # Escape that closes a completion list must not close the dialog.
         doc_box.press("Control+End")
         page.keyboard.type("$in")
