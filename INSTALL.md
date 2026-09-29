@@ -9,6 +9,10 @@ widgetset) from the internet while it builds.
 - **Network during the build:** github.com, pypi.org and deb.debian.org.
 - **Time:** the first build takes roughly 3–10 minutes; later ones reuse most of it.
 
+**Windows without Docker?** There is also a native installer, with no
+container engine and no HTTPS: see
+[section 11](#11-windows-without-docker-native-installer).
+
 Every command below is shown for Docker. **For Podman, replace `docker` with
 `podman`** — the compose files, flags and paths are the same. Where Windows
 PowerShell differs from macOS/Linux shells, both are given.
@@ -25,6 +29,7 @@ PowerShell differs from macOS/Linux shells, both are given.
 8. [Reaching Monguana from other machines](#8-reaching-monguana-from-other-machines)
 9. [Troubleshooting](#9-troubleshooting)
 10. [What was actually tested](#10-what-was-actually-tested)
+11. [Windows without Docker (native installer)](#11-windows-without-docker-native-installer)
 
 ---
 
@@ -464,9 +469,81 @@ volume:
   the container refused.
 - Both compose files validate with Docker Compose (`docker compose config`).
 
+On **Windows with Docker Desktop**, Monguana was installed and run by hand
+(2026-09-29) and works.
+
 Not tested here: Docker Engine itself (its daemon needed root on the test
-machine), Windows, and macOS. The steps for those follow Docker's and
+machine), and macOS. The steps for those follow Docker's and
 Podman's documented behaviour, notably that Docker Desktop and Podman's
 machines forward `host.docker.internal` / `host.containers.internal` to the
 computer running them. If something differs on your system, `manage.py probe`
 will show where, and an issue on GitHub is welcome.
+
+---
+
+## 11. Windows without Docker (native installer)
+
+For a computer without Docker: a normal Windows installer that runs Monguana
+directly, for **you, on this computer only**. It needs no administrator rights,
+no container engine and no certificate.
+
+**Get it:** `Monguana-<version>-setup.exe`, attached to each
+[release](https://github.com/El-Iguana/monguana_wapyt/releases) (built by the
+`windows` GitHub Actions workflow). Windows 10 or 11, 64-bit; about 90 MB
+installed.
+
+**SmartScreen:** the installer is not code-signed yet, so Windows says
+*"Windows protected your PC"*. Choose **More info → Run anyway**.
+
+**What it does:**
+
+- Installs to `%LOCALAPPDATA%\Programs\Monguana`, with its own Python. It
+  does not touch any Python you have.
+- Adds **Monguana**, **Reset Monguana password** and **Uninstall Monguana** to
+  the Start menu. It can also add a desktop shortcut and start Monguana when
+  you sign in.
+- Starting **Monguana** runs the server in the background and opens
+  `http://127.0.0.1:8766/monguana` in your default browser. If 8766 is taken,
+  it uses the next free port. A tray icon offers **Open Monguana**, **Show log
+  folder** and **Quit Monguana**. Starting it again while it runs just opens
+  the browser.
+- **Plain HTTP is safe here** because it listens on 127.0.0.1 only: nothing
+  outside your computer can reach it. Use `127.0.0.1` exactly, not
+  `localhost`, which answers *400 Invalid host header*.
+
+**First start:** Monguana creates the `admin` account and shows its
+generated password **once**, in a message box. Press **Ctrl+C** on the box to
+copy it, sign in, then change it with the **Password** button. Lost it? Run
+**Reset Monguana password** from the Start menu.
+
+**MongoDB is not included.** Point Monguana at your own server. A MongoDB on
+the same computer is simply `127.0.0.1`, port `27017`: none of the container
+networking of section 5 applies.
+
+**Your data** (accounts, saved connections, the key that encrypts their
+passwords, logs) is in `%LOCALAPPDATA%\Monguana`. Upgrading keeps it: run the
+new installer over the old one. To back it up, quit Monguana from the tray and
+copy that folder. Keep `secret.key` with `monguana.db`; without it, the saved
+passwords cannot be decrypted.
+
+**Uninstall** from Start menu → Uninstall Monguana, or Settings → Apps. It
+asks whether to delete your data too; the default keeps it.
+
+**If it does not start**, a message box says so. The reason is in
+`%LOCALAPPDATA%\Monguana\logs\server.log` (tray → Show log folder). The
+log from the start before that is `server.previous.log`.
+
+**Command line** (PowerShell), for support or scripts:
+
+```powershell
+$m = "$env:LOCALAPPDATA\Programs\Monguana"
+& "$m\python\python.exe" "$m\app\monguana_launcher.py" --status   # prints the URL if running
+& "$m\python\python.exe" "$m\app\monguana_launcher.py" --stop
+& "$m\python\python.exe" "$m\app\monguana_launcher.py" --check    # start, check the login page, stop
+```
+
+**Tested:** every build runs on a GitHub Actions Windows runner, which
+installs it silently, starts it, checks the login page and the script MIME
+types, stops it and uninstalls it. The tray icon and the first-run message
+box can only be checked by hand on a Windows desktop.
+

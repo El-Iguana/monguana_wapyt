@@ -28,6 +28,9 @@ DATA_DIR = Path(os.environ.get("MONGUANA_DATA_DIR", Path(__file__).resolve().par
 DB_PATH = DATA_DIR / "monguana.db"
 KEY_PATH = DATA_DIR / "secret.key"
 SESSION_KEY_PATH = DATA_DIR / "session.key"
+# Windows opens os.open() files in text mode unless told otherwise; the keys
+# are bytes. (The 0o600 mode is ignored there: %LOCALAPPDATA% is per-user.)
+_O_BINARY = getattr(os, "O_BINARY", 0)
 
 _CRED_PREFIX = "fernet:"
 
@@ -58,7 +61,7 @@ def _load_fernet() -> Fernet:
         key = Fernet.generate_key()
         # Created with the restrictive mode already in place: chmod after the
         # fact leaves a window where the key is world-readable.
-        fd = os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
         try:
             os.write(fd, key)
         finally:
@@ -79,11 +82,11 @@ def session_secret() -> str:
         return from_env
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if SESSION_KEY_PATH.exists():
-        existing = SESSION_KEY_PATH.read_text().strip()
+        existing = SESSION_KEY_PATH.read_text(encoding="ascii").strip()
         if existing:
             return existing
     secret = secrets.token_urlsafe(48)
-    fd = os.open(SESSION_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(SESSION_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_BINARY, 0o600)
     try:
         os.write(fd, secret.encode())
     finally:
