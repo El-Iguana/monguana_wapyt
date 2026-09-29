@@ -544,6 +544,7 @@ $m = "$env:LOCALAPPDATA\Programs\Monguana"
 
 **Tested:** every build runs on a GitHub Actions Windows runner, which
 installs it silently, starts it, checks the login page and the script MIME
-types, stops it and uninstalls it. The tray icon and the first-run message
-box can only be checked by hand on a Windows desktop.
+types, stops it and uninstalls it. The installer from that build was also
+installed and used by hand on **Windows 11** (2026-09-29), including the tray
+icon, the first-run message box and the Start-menu shortcuts.
 
