@@ -57,6 +57,7 @@ from services.docfmt import (
     apply_column_state,
     cell_text,
     compact,
+    default_column_width,
     count_nodes,
     format_bytes,
     merge_column_state,
@@ -2505,7 +2506,9 @@ class Monguana(MainWindow):
         # The saved layout is for this collection's documents; aggregation
         # output has its own shape and is laid out fresh.
         saved = view.get("columns") if view["mode"] == "find" else None
-        layout = apply_column_state(keys, saved, {"_id": 230})
+        defaults = {key: default_column_width(key) for key in keys}
+        defaults["_id"] = 230
+        layout = apply_column_state(keys, saved, defaults)
         columns = [key for key, _width in layout]
         view["table"].set_columns([
             ColumnConfig(
@@ -3678,6 +3681,9 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
   font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;
   border:1px solid var(--mg-line);border-radius:6px;box-sizing:border-box;}
 .mg-panel.mg-json{border:0;border-radius:0;}
+/* Columns have pixel widths, so the table is their sum and scrolls sideways;
+   when that is narrower than the panel, stretch to fill it instead. */
+.mg-panel .wapyt-datatable-table{min-width:100%;}
 .mg-fill{height:100%;}
 @container (max-width: 760px){
   .mg-bar .mg-btn span:not(.mdi){display:none;}
