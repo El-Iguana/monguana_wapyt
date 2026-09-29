@@ -168,7 +168,19 @@ set of create options. See CLAUDE.md, *Index CRUD*.
   document-level Escape listener, which used to outlive every dialog.
   Monguana opts in everywhere.
 
-## Phase 38: native Windows install, browser only — planned (2026-09-29)
+## Phase 38: native Windows install, browser only — in progress (2026-09-29)
+
+**Built** (`tools/windows/`, `.github/workflows/windows.yml`, INSTALL.md §11):
+the launcher, the bundle build (runs on any OS), the Inno Setup script, the
+Windows CI job, and the audit fixes (MIME types pinned against the Windows
+registry, key files written in binary mode, UTF-8 for the server). Tested on
+Linux: the bundle builds; the launcher's first run, port fallback, single
+instance, `--status`/`--stop`/`--check`, browser sign-in with the generated
+password, and `--reset-password`.
+
+**Still open:** the first run of the Windows CI job (installer compile,
+silent install, `--check`, uninstall), and a hand check on a Windows desktop
+of the tray icon, the first-run message box and the Start-menu shortcuts.
 
 A `setup.exe` that runs Monguana on Windows **without Docker and without
 HTTPS**, for people who only want it on their own machine.
@@ -242,4 +254,4 @@ Not gaps — ideas the rewrite could take further:
 
 31–37 are done: every gap from the original is closed.
 
-38 (native Windows install) is next.
+38 (native Windows install) is in progress.
