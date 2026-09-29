@@ -65,3 +65,9 @@ def test_column_state_merge_keeps_what_is_not_on_the_page():
 def test_int64_reads_as_a_plain_number():
     assert docfmt.cell_text({"$numberLong": "5"}) == "5"
     assert docfmt.type_label({"$numberLong": "5"}) == "Int64"
+
+
+def test_default_column_width_fits_the_header_within_bounds():
+    assert docfmt.default_column_width("a") == 140
+    assert docfmt.default_column_width("shipping_address_line") == 202
+    assert docfmt.default_column_width("x" * 200) == 320

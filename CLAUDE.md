@@ -367,6 +367,12 @@ The collection table opts in to wapyt's `resizable_columns` and
 (`docfmt.apply_column_state`) in find mode only. Renaming a collection starts
 it with a fresh layout.
 
+- **Every column starts with a pixel width** (`docfmt.default_column_width`:
+  fits the header, 140–320 px; `_id` 230). wapyt only sizes the table to the
+  sum of its columns, and scrolls sideways, once *all* of them have one;
+  otherwise `table-layout: fixed` squeezes every column into the panel. A
+  `min-width:100%` rule in `_CSS` stretches a narrow table to fill.
+
 - **pytincture validates BFF arguments against their annotations.** `None`
   for a `dict` parameter is a 400 before the method runs — hence
   `UiStateService.clear(key)` rather than `set(key, None)`.

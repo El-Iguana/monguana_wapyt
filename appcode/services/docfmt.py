@@ -233,6 +233,16 @@ def format_bytes(size: Any) -> str:
     return ""
 
 
+def default_column_width(key: str) -> int:
+    """
+    A column's starting width in pixels: room for its header, never under
+    140. Giving every column a pixel width is what makes the table scroll
+    sideways instead of squeezing each column to fit the panel.
+    """
+    # ~7.5px a character at the header's 12.5px bold, plus padding and caret.
+    return max(140, min(320, round(len(str(key)) * 7.5) + 44))
+
+
 def apply_column_state(keys: list, state: dict | None, default_widths: dict | None = None) -> list:
     """
     The table's columns for this page, in the saved order with saved widths.
