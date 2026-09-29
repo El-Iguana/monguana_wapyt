@@ -184,6 +184,18 @@ Int64 is tagged even when small (`{"$numberLong": "5"}`, `mql._tag_int64`):
 relaxed EJSON writes it as a plain number, which parsed back — and was saved —
 as Int32 (fixed in ROADMAP phase 37). The table and tree still show `5`.
 
+**Types are visible (2026-09-29, Studio 3T style).** Each table cell carries
+its BSON type icon (`_TYPE_ICONS`, the tree's map, via wapyt's
+`ColumnConfig(icon_by=…)`; tooltip names the type, CSS tints it). The document
+editor, Clone and the read-only viewer show `docfmt.to_shell`: mongo shell
+syntax with every type spelled out — `ObjectId("…")`, `ISODate("…")`,
+`NumberInt(1)`, `NumberLong("5")`, `NumberDecimal("…")`, `UUID("…")`,
+`Timestamp(t, i)`, `/re/i`, and `1.0` for a double (a bare `5` would come back
+Int32). What has no shell spelling (binary, code, far-out dates, NaN, a regex
+with a `/`) stays Extended JSON; `mql.parse` reads both.
+`tests/test_shell_format.py` round-trips every type. The JSON view and Copy as
+JSON stay Extended JSON, since they are meant to be JSON.
+
 UUIDs are "standard" (subtype 4) everywhere — in `mql`'s JSON options and on
 every `MongoClient` (`uuidRepresentation="standard"`). pymongo's default
 refuses to encode a native `uuid.UUID` at all. `to_display` rewrites them as

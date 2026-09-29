@@ -65,6 +65,7 @@ from services.docfmt import (
     scalar_text,
     tagged_type,
     to_pretty,
+    to_shell,
     type_label,
     union_columns,
 )
@@ -108,6 +109,9 @@ TREE_MAX_NODES = 4000
 # _render_table). Neither can collide with a real field in practice.
 _ROW_KEY = "\u0001row"
 _RANK_KEY = "\u0001rank"
+# Row key prefix for a cell's type icon (the column's icon_by); "_title" on
+# the same key is its tooltip.
+_TYPE_KEY = "\u0001type:"
 
 _MODES = (
     ("find", "find"),
@@ -167,8 +171,9 @@ _TYPE_ICONS = {
     "Array": "mdi-code-brackets",
     "Object": "mdi-code-braces",
     "Binary": "mdi-file-outline",
-    "UUID": "mdi-identifier",
+    "UUID": "mdi-barcode",
     "Regex": "mdi-regex",
+    "Timestamp": "mdi-clock-outline",
 }
 
 
@@ -2512,7 +2517,7 @@ class Monguana(MainWindow):
         columns = [key for key, _width in layout]
         view["table"].set_columns([
             ColumnConfig(
-                id=key, header=key, sort_by=_RANK_KEY, width=width,
+                id=key, header=key, sort_by=_RANK_KEY, width=width, icon_by=_TYPE_KEY + key,
                 # A header click re-sorts on the server; see _on_table_sort.
                 sortable=view["mode"] == "find",
             )
@@ -2530,6 +2535,9 @@ class Monguana(MainWindow):
             for key in columns:
                 if key in doc:
                     cells[key] = cell_text(doc[key])
+                    kind = type_label(doc[key])
+                    cells[_TYPE_KEY + key] = _TYPE_ICONS.get(kind, "mdi-circle-small")
+                    cells[_TYPE_KEY + key + "_title"] = kind
             rows.append(cells)
         view["table"].set_rows(rows)
         view["table"].set_empty_text("No documents match." if view["mode"] == "find" else "No results.")
@@ -2766,7 +2774,7 @@ class Monguana(MainWindow):
             self._toast(result.get("error", "Could not load the document"))
             return
         await self._document_editor(
-            tid, title="Edit document", text=to_pretty(result["doc"]),
+            tid, title="Edit document", text=to_shell(result["doc"]),
             hint="Saved as a whole: a field you delete here is removed. The _id cannot change.",
             save=lambda text: MongoService().replace_async(
                 view["conn"], view["db"], view["coll"], row["id"], text),
@@ -2782,7 +2790,7 @@ class Monguana(MainWindow):
         doc = dict(result["doc"])
         doc.pop("_id", None)
         await self._document_editor(
-            tid, title="Clone document", text=to_pretty(doc),
+            tid, title="Clone document", text=to_shell(doc),
             hint="Inserted as a new document with a new _id.",
             save=lambda text: MongoService().insert_async(view["conn"], view["db"], view["coll"], text),
             done=lambda _result: "Cloned.",
@@ -2874,7 +2882,7 @@ class Monguana(MainWindow):
 
     def _document_viewer(self, doc) -> None:
         modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Document (read-only)", width=760, height=600))
-        modal.body.innerHTML = f'<pre class="mg-json mg-fill">{_esc(to_pretty(doc))}</pre>'
+        modal.body.innerHTML = f'<pre class="mg-json mg-fill">{_esc(to_shell(doc))}</pre>'
         modal.show()
 
     def _selected_rows(self, tid: str) -> list:
@@ -3684,6 +3692,16 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 /* Columns have pixel widths, so the table is their sum and scrolls sideways;
    when that is narrower than the panel, stretch to fill it instead. */
 .mg-panel .wapyt-datatable-table{min-width:100%;}
+/* Each cell's BSON type icon (_TYPE_ICONS), tinted by type; its tooltip names it. */
+.wapyt-datatable-cell-icon{opacity:.9;}
+.wapyt-datatable-cell-icon.mdi-identifier{color:#fbbf24;}
+.wapyt-datatable-cell-icon.mdi-format-quote-close{color:#34d399;}
+.wapyt-datatable-cell-icon.mdi-numeric,.wapyt-datatable-cell-icon.mdi-decimal{color:#38bdf8;}
+.wapyt-datatable-cell-icon.mdi-calendar,.wapyt-datatable-cell-icon.mdi-clock-outline{color:#a78bfa;}
+.wapyt-datatable-cell-icon.mdi-toggle-switch-outline{color:#fb923c;}
+.wapyt-datatable-cell-icon.mdi-barcode{color:#f472b6;}
+.wapyt-datatable-cell-icon.mdi-null{color:#64748b;}
+.wapyt-datatable-cell-icon.mdi-code-braces,.wapyt-datatable-cell-icon.mdi-code-brackets{color:#94a3b8;}
 .mg-fill{height:100%;}
 @container (max-width: 760px){
   .mg-bar .mg-btn span:not(.mdi){display:none;}
