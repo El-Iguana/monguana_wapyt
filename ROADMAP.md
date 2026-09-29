@@ -185,10 +185,12 @@ registry, `--stop`, and silent uninstall keeping the data. Its first run found
 pytincture unable to read any contained file on Windows; `pytincture_compat.py`
 works around it (see CLAUDE.md).
 
+**Checked by hand on Windows 11** (2026-09-29): the installer built by CI
+installs and works, including the tray icon, the first-run message box and
+the Start-menu shortcuts.
+
 **Still open:**
 
-- A hand check on a Windows desktop: the tray icon, the first-run message box
-  and the Start-menu shortcuts.
 - The upstream pytincture fix (branch `fix/windows-contained-file-open`,
   ready locally, parked: no push access to `pytincture/pytincture`). Once a
   release has it, bump the pin and delete `pytincture_compat.py`.
