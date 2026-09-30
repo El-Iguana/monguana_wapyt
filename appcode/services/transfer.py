@@ -76,12 +76,15 @@ def _require_csrf(request: Request) -> None:
 
 
 def _client(user_id: int, conn_id: int):
+    from services.backends import BackendUnavailable
     from services.mongo_pool import ProfileNotFound, pool
 
     try:
         return pool.client(user_id, conn_id)
     except ProfileNotFound:
         raise HTTPException(status_code=404, detail="Connection not found") from None
+    except BackendUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 def _safe_filename(*parts: str) -> str:

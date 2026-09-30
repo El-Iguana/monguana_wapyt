@@ -1,5 +1,6 @@
 """
-BFF: saved MongoDB connection profiles.
+BFF: saved connection profiles — MongoDB servers, or another backend's stores
+(``services.backends``).
 
 Every query is scoped by the caller's own ``user_id``. Secrets never travel
 back to the browser: ``list``/``get`` return ``has_password`` / ``has_uri``
@@ -13,16 +14,14 @@ from typing import Any, Optional
 from pytincture.dataclass import backend_for_frontend, bff_policy
 
 from services.auth import current_user_id
-from services.db import encrypt, fetch_connection, get_db
+from services.db import encode_options, encrypt, fetch_connection, get_db
 
 _PUBLIC_COLUMNS = (
-    "id, name, folder, host, port, username, auth_source, tls, direct, "
+    "id, name, backend, folder, host, port, username, auth_source, tls, direct, "
     "default_db, notes, created_at"
 )
 
 _SENTINEL_UNCHANGED = "\x00unchanged\x00"
-
-_URI_SCHEMES = ("mongodb://", "mongodb+srv://")
 
 
 @backend_for_frontend
@@ -95,28 +94,36 @@ class ConnectionService:
         notes: str = "",
         password: str = _SENTINEL_UNCHANGED,
         uri: str = _SENTINEL_UNCHANGED,
+        backend: str = "mongodb",
+        options: Optional[dict] = None,
     ) -> dict:
         """
         Create or update a profile.
 
         ``password`` and ``uri`` are three-state: omitted leaves the stored
-        value alone, ``""`` clears it, anything else replaces it.
+        value alone, ``""`` clears it, anything else replaces it. ``options``
+        (the backend's own settings) is kept when omitted.
         """
         if not self._user_id:
             return {"ok": False, "error": "Not authenticated"}
 
-        stored_uri = ""
-        if conn_id and uri == _SENTINEL_UNCHANGED:
-            existing = fetch_connection(int(conn_id), self._user_id)
-            stored_uri = (existing or {}).get("uri", "")
-        effective_uri = stored_uri if uri == _SENTINEL_UNCHANGED else (uri or "")
-
-        errors = self._validate(name, host, port, effective_uri)
+        existing: dict = {}
+        if conn_id and (uri == _SENTINEL_UNCHANGED or options is None):
+            existing = fetch_connection(int(conn_id), self._user_id) or {}
+        profile = {
+            "backend": backend,
+            "host": host,
+            "port": port,
+            "uri": existing.get("uri", "") if uri == _SENTINEL_UNCHANGED else (uri or ""),
+            "options": existing.get("options", {}) if options is None else options,
+        }
+        errors = self._validate(name, profile)
         if errors:
             return {"ok": False, "errors": errors}
 
         values: dict[str, Any] = {
             "name": name.strip(),
+            "backend": (backend or "").strip() or "mongodb",
             "folder": (folder or "").strip(),
             "host": (host or "").strip(),
             "port": int(port or 27017),
@@ -131,6 +138,8 @@ class ConnectionService:
             values["password"] = encrypt(password or "")
         if uri != _SENTINEL_UNCHANGED:
             values["uri"] = encrypt((uri or "").strip())
+        if options is not None:
+            values["options"] = encode_options(options)
 
         with get_db() as conn:
             if conn_id:
@@ -149,6 +158,7 @@ class ConnectionService:
             else:
                 values.setdefault("password", "")
                 values.setdefault("uri", "")
+                values.setdefault("options", "")
                 columns = ", ".join(["user_id", *values])
                 marks = ", ".join("?" * (len(values) + 1))
                 cursor = conn.execute(
@@ -185,10 +195,10 @@ class ConnectionService:
             return {"ok": False, "error": "Not authenticated"}
         with get_db() as conn:
             cursor = conn.execute(
-                "INSERT INTO connections (user_id, name, folder, host, port, username, "
-                "  password, auth_source, tls, direct, uri, default_db, notes) "
-                "SELECT user_id, name || ' (copy)', folder, host, port, username, "
-                "  password, auth_source, tls, direct, uri, default_db, notes "
+                "INSERT INTO connections (user_id, name, backend, options, folder, host, "
+                "  port, username, password, auth_source, tls, direct, uri, default_db, notes) "
+                "SELECT user_id, name || ' (copy)', backend, options, folder, host, "
+                "  port, username, password, auth_source, tls, direct, uri, default_db, notes "
                 "FROM connections WHERE id = ? AND user_id = ?",
                 (int(conn_id), self._user_id),
             )
@@ -211,6 +221,8 @@ class ConnectionService:
         direct: bool = True,
         password: str = _SENTINEL_UNCHANGED,
         uri: str = _SENTINEL_UNCHANGED,
+        backend: str = "mongodb",
+        options: Optional[dict] = None,
     ) -> dict:
         """
         Ping with the editor's current values, saved or not.
@@ -226,6 +238,8 @@ class ConnectionService:
             if not stored:
                 return {"ok": False, "error": "Connection not found"}
         profile = {
+            "backend": backend,
+            "options": stored.get("options", {}) if options is None else options,
             "host": host,
             "port": port,
             "username": username,
@@ -235,13 +249,14 @@ class ConnectionService:
             "password": stored.get("password", "") if password == _SENTINEL_UNCHANGED else password,
             "uri": stored.get("uri", "") if uri == _SENTINEL_UNCHANGED else uri,
         }
-        errors = self._validate("x", host, port, profile["uri"])
+        errors = self._validate("x", profile)
         if errors:
             return {"ok": False, "error": next(iter(errors.values()))}
 
-        from services.mongo_pool import client_options, test_options
+        from services import backends
 
-        return test_options(client_options(profile))
+        chosen = backends.for_profile(profile)
+        return chosen.test(chosen.connect_options(profile))
 
     def ping(self, conn_id: int) -> dict:
         """Ping a saved profile through the pool — this is "Connect"."""
@@ -278,22 +293,17 @@ class ConnectionService:
         return data
 
     @staticmethod
-    def _validate(name: str, host: str, port: Any, uri: str) -> dict:
-        """The Form checks the same things in the browser; this is the copy that counts."""
+    def _validate(name: str, profile: dict) -> dict:
+        """The name here; everything else belongs to the profile's backend."""
+        from services import backends
+
         errors: dict = {}
         if not (name or "").strip():
             errors["name"] = "Name is required"
-        uri = (uri or "").strip()
-        if uri:
-            if not uri.startswith(_URI_SCHEMES):
-                errors["uri"] = "A connection string starts with mongodb:// or mongodb+srv://"
-            return errors
-        if not (host or "").strip():
-            errors["host"] = "Host is required (or give a connection string)"
         try:
-            port_value = int(port)
-            if not 1 <= port_value <= 65535:
-                raise ValueError
-        except (TypeError, ValueError):
-            errors["port"] = "Port must be between 1 and 65535"
+            chosen = backends.for_profile(profile)
+        except backends.BackendUnavailable as exc:
+            errors["backend"] = str(exc)
+            return errors
+        errors.update(chosen.validate(profile))
         return errors

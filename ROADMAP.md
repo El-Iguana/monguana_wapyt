@@ -255,7 +255,14 @@ skip themselves on Windows.
 **Later, not this phase:** a desktop window instead of a browser tab; the
 same launcher for IguanaXterm, which shares the service wiring.
 
-## Phase 39: backend plugins, tinymongo first — planned (2026-09-30)
+## Phase 39: backend plugins, tinymongo first — in progress (2026-09-30)
+
+**Step 1 done** (2026-09-30): `services/backends/` (registry + the built-in
+`mongodb` backend), `connections.backend`/`options` with their migration, the
+pool and `ConnectionService` building, validating and testing through the
+profile's backend. A profile naming a backend that is not installed says so
+instead of failing. `tests/test_backends.py` covers it with a fake backend;
+the live tests and the UI smoke test pass unchanged against MongoDB 7.
 
 Let a connection point at something other than a MongoDB server, starting with
 **tinymongo** (`../tinymongo`, PyPI `tinymongo`): a PyMongo-shaped library
@@ -357,4 +364,4 @@ Not gaps — ideas the rewrite could take further:
 
 38 (native Windows install) is in progress.
 
-39 (backend plugins, tinymongo first) is planned; its work list is in order.
+39 (backend plugins, tinymongo first) is in progress: step 1 is done.
