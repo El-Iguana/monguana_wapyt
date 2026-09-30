@@ -29,11 +29,13 @@ class JobService:
         from services.transfer import _safe_filename, write_dump
 
         try:
-            client = pool.client(self._user_id, int(conn_id))
+            client, backend = pool.open(self._user_id, int(conn_id))
         except ProfileNotFound:
             return {"ok": False, "error": "Connection not found"}
         except BackendUnavailable as exc:
             return {"ok": False, "error": str(exc)}
+        if "dump_restore" not in backend.capabilities:
+            return {"ok": False, "error": f"{backend.label} connections cannot be dumped"}
         path = jobs.new_file(".zip")
         title = f"Dump {db}.{coll}" if coll else f"Dump {db}"
         try:

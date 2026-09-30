@@ -300,6 +300,19 @@ backend is not installed fails with `BackendUnavailable`, shown as an error.
 A backend's own settings live in `connections.options` (JSON, Fernet-encrypted,
 kept by `save` when omitted).
 
+### Backend capabilities (phase 39)
+
+`backends.CAPABILITIES` lists what a backend may lack; `MongoService._can` /
+`_require` check the backend behind the client (`pool.open` returns both).
+Without a capability the service either falls back (stats: count only, sizes
+`None`; `$sample`: first documents; no `maxTimeMS` — use `_time_limit(...)`,
+never a literal keyword; collMod changes become rebuilds) or refuses with
+"<Label> connections cannot …". `ConnectionService.list` sends each profile's
+`capabilities`; the UI's `_caps(conn_id)` reads them, tree nodes carry them as
+`data["flags"]`, and `TreeAction(requires=[…])` (wapyt) hides entries.
+**A new server feature needs a capability** if another backend might lack it.
+`test_live.py` checks every fallback through a backend declaring none.
+
 ### Plain routes for bytes — `transfer.py`, under `/mg`
 
 Export (`GET /mg/export/<id>`), restore (`POST /mg/restore/<id>`, body = the

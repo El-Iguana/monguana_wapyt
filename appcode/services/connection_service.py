@@ -284,7 +284,17 @@ class ConnectionService:
 
     @staticmethod
     def _public(row: Any, open_ids: set) -> dict:
+        from services import backends
+
         data = dict(row)
+        # What the UI may offer for this profile (see backends.CAPABILITIES).
+        try:
+            backend = backends.get(data.get("backend") or "")
+            data["backend_label"] = backend.label
+            data["capabilities"] = sorted(backend.capabilities)
+        except backends.BackendUnavailable:
+            data["backend_label"] = data.get("backend") or ""
+            data["capabilities"] = []
         data["tls"] = bool(data.get("tls"))
         data["direct"] = bool(data.get("direct"))
         data["has_password"] = bool(data.pop("has_password", 0))

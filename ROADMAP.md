@@ -264,6 +264,19 @@ profile's backend. A profile naming a backend that is not installed says so
 instead of failing. `tests/test_backends.py` covers it with a fake backend;
 the live tests and the UI smoke test pass unchanged against MongoDB 7.
 
+**Step 2 done** (2026-09-30): `backends.CAPABILITIES` names 13 optional
+features; a backend lists the ones it has (MongoDB: all). `MongoService` falls
+back without `stats`, `sample`, `collection_types`, `time_limits`,
+`authorized_listing`, `hello` and `collmod` (index changes rebuild instead), and
+refuses the rest with "<Backend> connections cannot …". The connection list
+carries each profile's capabilities to the UI, which hides the tree entries
+(through wapyt's new `TreeAction(requires=…)`), Explain, the capped, TTL and
+Hidden fields, and Hide/unhide. Live tests run every fallback and refusal
+against MongoDB through a backend declaring none; a browser check compared
+that profile's menus and dialogs with a full MongoDB one. It needs wapyt's
+`requires` (WAwesome-AI/wa_pytincture_widgetset#17): `WAPYT_REF` is pinned to
+its merge, `d3fecf4`.
+
 Let a connection point at something other than a MongoDB server, starting with
 **tinymongo** (`../tinymongo`, PyPI `tinymongo`): a PyMongo-shaped library
 that stores databases in local files (SQLite, JSON, DuckDB, Parquet).
@@ -364,4 +377,4 @@ Not gaps — ideas the rewrite could take further:
 
 38 (native Windows install) is in progress.
 
-39 (backend plugins, tinymongo first) is in progress: step 1 is done.
+39 (backend plugins, tinymongo first) is in progress: steps 1–2 are done.

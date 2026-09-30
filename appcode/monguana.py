@@ -323,6 +323,8 @@ class Monguana(MainWindow):
         database = ["database"]
         collection = ["collection"]
         either = ["collection", "view"]
+        # `requires` entries show only where the node's data["flags"] (its
+        # connection's backend capabilities) has them: phase 39.
         self.tree = Tree(
             TreeConfig(
                 filterable=True,
@@ -330,8 +332,10 @@ class Monguana(MainWindow):
                 empty_text="No connections yet.\nUse New connection to add one.",
                 context_actions=[
                     TreeAction("connect", "Connect / refresh", "mdi-connection", kinds=server),
-                    TreeAction("new_db", "Create database…", "mdi-database-plus", kinds=server),
-                    TreeAction("restore", "Restore dump…", "mdi-backup-restore", kinds=server),
+                    TreeAction("new_db", "Create database…", "mdi-database-plus", kinds=server,
+                               requires=["create_collection"]),
+                    TreeAction("restore", "Restore dump…", "mdi-backup-restore", kinds=server,
+                               requires=["dump_restore"]),
                     TreeAction("disconnect", "Disconnect", "mdi-lan-disconnect", kinds=server),
                     TreeAction(separator=True),
                     TreeAction("edit_conn", "Edit connection…", "mdi-pencil", kinds=server),
@@ -341,17 +345,21 @@ class Monguana(MainWindow):
                     TreeAction("toggle_system", "Show / hide system collections",
                                "mdi-eye-settings-outline", kinds=server + database),
                     TreeAction("refresh_db", "Refresh", "mdi-refresh", kinds=database),
-                    TreeAction("new_coll", "Create collection…", "mdi-table-plus", kinds=database),
-                    TreeAction("dump_db", "Dump database", "mdi-download", kinds=database),
+                    TreeAction("new_coll", "Create collection…", "mdi-table-plus", kinds=database,
+                               requires=["create_collection"]),
+                    TreeAction("dump_db", "Dump database", "mdi-download", kinds=database,
+                               requires=["dump_restore"]),
                     TreeAction("restore_db", "Restore into this database…",
-                               "mdi-backup-restore", kinds=database),
+                               "mdi-backup-restore", kinds=database, requires=["dump_restore"]),
                     TreeAction("drop_db", "Drop database…", "mdi-delete-forever",
                                kinds=database, danger=True),
                     TreeAction("open", "Open in new tab", "mdi-tab-plus", kinds=either),
                     TreeAction("indexes", "Indexes…", "mdi-key-chain", kinds=collection),
                     TreeAction("stats", "Statistics", "mdi-chart-box-outline", kinds=collection),
-                    TreeAction("rename", "Rename…", "mdi-rename", kinds=collection),
-                    TreeAction("dump_coll", "Dump collection", "mdi-download", kinds=collection),
+                    TreeAction("rename", "Rename…", "mdi-rename", kinds=collection,
+                               requires=["rename"]),
+                    TreeAction("dump_coll", "Dump collection", "mdi-download", kinds=collection,
+                               requires=["dump_restore"]),
                     TreeAction("drop_coll", "Drop…", "mdi-delete-forever",
                                kinds=either, danger=True),
                 ],
@@ -623,6 +631,10 @@ class Monguana(MainWindow):
             return None
         return next((conn for conn in self._conns if conn["id"] == wanted), None)
 
+    def _caps(self, conn_id) -> list:
+        """What this connection's backend supports (``backends.CAPABILITIES``)."""
+        return list((self._conn(conn_id) or {}).get("capabilities") or [])
+
     def _forget(self, conn_id: int) -> None:
         self._dbs.pop(conn_id, None)
         for key in [key for key in self._colls if key[0] == conn_id]:
@@ -667,7 +679,7 @@ class Monguana(MainWindow):
         return TreeItem(
             id=node, label=conn["name"], icon="mdi-server", open_icon="mdi-server-network",
             tooltip=tooltip, items=children,
-            data={"kind": "server", "conn": conn_id},
+            data={"kind": "server", "conn": conn_id, "flags": self._caps(conn_id)},
         )
 
     def _db_item(self, conn_id: int, row: dict) -> TreeItem:
@@ -691,11 +703,10 @@ class Monguana(MainWindow):
             badge=len(colls) if colls is not None else None,
             tooltip=f"{name}" + (f"\n{size} on disk" if size else ""),
             items=children,
-            data={"kind": "database", "conn": conn_id, "db": name},
+            data={"kind": "database", "conn": conn_id, "db": name, "flags": self._caps(conn_id)},
         )
 
-    @staticmethod
-    def _coll_item(conn_id: int, db: str, row: dict) -> TreeItem:
+    def _coll_item(self, conn_id: int, db: str, row: dict) -> TreeItem:
         kind = "view" if row.get("type") == "view" else "collection"
         icon = {
             "view": "mdi-eye-outline",
@@ -705,7 +716,8 @@ class Monguana(MainWindow):
             id=_node_id("k", conn_id, db, row["name"]),
             label=row["name"], icon=icon,
             tooltip=f"{db}.{row['name']}" + (f" ({row.get('type')})" if kind == "view" else ""),
-            data={"kind": kind, "conn": conn_id, "db": db, "coll": row["name"]},
+            data={"kind": kind, "conn": conn_id, "db": db, "coll": row["name"],
+                  "flags": self._caps(conn_id)},
         )
 
     @staticmethod
@@ -1096,16 +1108,18 @@ class Monguana(MainWindow):
 
     async def _create_collection_dialog(self, conn_id: int, db: str) -> None:
         modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"Create collection in {db}", width=480, height=420))
+        fields = [FieldConfig(id="name", label="Collection name", required=True, span=2)]
+        if "capped" in self._caps(conn_id):
+            fields += [
+                FieldConfig(id="capped", label="Capped", type="checkbox", span=2),
+                FieldConfig(id="size", label="Size (bytes)", type="number", min=0,
+                            help="Required when capped."),
+                FieldConfig(id="max_docs", label="Max documents", type="number", min=0),
+            ]
         form = Form(
             FormConfig(
                 submit_text="Create", cancel_text="Cancel", columns=2,
-                fields=[
-                    FieldConfig(id="name", label="Collection name", required=True, span=2),
-                    FieldConfig(id="capped", label="Capped", type="checkbox", span=2),
-                    FieldConfig(id="size", label="Size (bytes)", type="number", min=0,
-                                help="Required when capped."),
-                    FieldConfig(id="max_docs", label="Max documents", type="number", min=0),
-                ],
+                fields=fields,
             ),
             container=modal.body,
         )
@@ -1164,14 +1178,18 @@ class Monguana(MainWindow):
         if not result.get("ok"):
             self._toast(result.get("error", "No statistics"))
             return
+        def size(key: str) -> str:
+            # None: the backend has no $collStats, so no sizes (phase 39).
+            return "—" if result.get(key) is None else format_bytes(result[key])
+
         rows = [
             ("Documents", f"{result['count']:,}"),
-            ("Data size", format_bytes(result["size"])),
-            ("Average document", format_bytes(result["avg_obj_size"])),
-            ("Storage size", format_bytes(result["storage_size"])),
-            ("Index size", format_bytes(result["total_index_size"])),
+            ("Data size", size("size")),
+            ("Average document", size("avg_obj_size")),
+            ("Storage size", size("storage_size")),
+            ("Index size", size("total_index_size")),
             ("Capped", "yes" if result.get("capped") else "no"),
-        ] + [(f"  {name}", format_bytes(size)) for name, size in result["index_sizes"].items()]
+        ] + [(f"  {name}", format_bytes(bytes_)) for name, bytes_ in result["index_sizes"].items()]
         modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"{db}.{coll}", width=440, height=420))
         modal.body.innerHTML = '<table class="mg-kv">' + "".join(
             f"<tr><th>{_esc(label)}</th><td>{_esc(value)}</td></tr>" for label, value in rows
@@ -1183,6 +1201,7 @@ class Monguana(MainWindow):
     # ------------------------------------------------------------------
 
     async def _indexes_dialog(self, conn_id: int, db: str, coll: str) -> None:
+        caps = self._caps(conn_id)
         modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"Indexes — {db}.{coll}", width=880, height=680))
         modal.body.innerHTML = (
             '<div class="mg-split">'
@@ -1206,7 +1225,8 @@ class Monguana(MainWindow):
                 empty_text="No indexes",
                 context_actions=[
                     TableAction("edit", "Edit…", "mdi-pencil"),
-                    TableAction("hide", "Hide / unhide", "mdi-eye-off-outline"),
+                    *([TableAction("hide", "Hide / unhide", "mdi-eye-off-outline")]
+                      if "collmod" in caps else []),
                     TableAction(separator=True),
                     TableAction("drop", "Drop index", "mdi-delete", danger=True),
                 ],
@@ -1282,7 +1302,7 @@ class Monguana(MainWindow):
         form = Form(
             FormConfig(
                 columns=4, submit_text="Create index",
-                fields=self._index_fields(),
+                fields=self._index_fields(None, caps),
             ),
             container=modal.body.querySelector("[data-slot=form]"),
         )
@@ -1311,10 +1331,14 @@ class Monguana(MainWindow):
         await _refresh()
 
     @staticmethod
-    def _index_fields(index: dict | None = None) -> list:
-        """The index form, empty for Create or filled from an index for Edit."""
+    def _index_fields(index: dict | None = None, caps: list | None = None) -> list:
+        """
+        The index form, empty for Create or filled from an index for Edit.
+        TTL and Hidden only where the backend has them (phase 39).
+        """
         index = index or {}
-        return [
+        caps = caps if caps is not None else ["ttl_indexes", "collmod"]
+        fields = [
             FieldConfig(id="keys", label="Keys", required=True, span=2,
                         value=index.get("keys_text", ""),
                         placeholder="{email: 1}  ·  {title: 'text'}  ·  {\"$**\": 1}"),
@@ -1338,6 +1362,8 @@ class Monguana(MainWindow):
             FieldConfig(id="hidden", label="Hidden from planner", type="checkbox",
                         value=bool(index.get("hidden"))),
         ]
+        dropped = {"ttl": "ttl_indexes", "hidden": "collmod"}
+        return [field for field in fields if dropped.get(field.id, "") in caps or field.id not in dropped]
 
     async def _index_editor(self, conn_id: int, db: str, coll: str, index: dict, refresh) -> None:
         """
@@ -1357,7 +1383,7 @@ class Monguana(MainWindow):
         plan_el = modal.body.querySelector("[data-slot=plan]")
         form = Form(
             FormConfig(columns=4, submit_text="Review changes", cancel_text="Cancel",
-                       fields=self._index_fields(index)),
+                       fields=self._index_fields(index, self._caps(conn_id))),
             container=modal.body.querySelector("[data-slot=form]"),
         )
         form.on_cancel(lambda _payload: modal.close())
@@ -1461,6 +1487,8 @@ class Monguana(MainWindow):
         cell = self.tabs.get_cell(tid)
         container = cell.getContainer() if hasattr(cell, "getContainer") else cell
         container.innerHTML = self._view_html(tid, conn.get("name", "?"), db, coll, kind)
+        if "explain" not in self._caps(conn_id):
+            container.querySelector('[data-mg="explain"]').hidden = True
 
         view = {
             "tid": tid, "conn": conn_id, "db": db, "coll": coll, "kind": kind,
@@ -2675,10 +2703,11 @@ class Monguana(MainWindow):
         result = await MongoService().stats_async(view["conn"], view["db"], view["coll"])
         label = _el(f"{tid}-stats")
         if label and result.get("ok"):
-            label.textContent = (
-                f"{result['count']:,} docs · {format_bytes(result['size'])} · "
-                f"{len(result['index_sizes'])} index(es)"
-            )
+            parts = [f"{result['count']:,} docs"]
+            if result.get("size") is not None:
+                parts += [format_bytes(result["size"]),
+                          f"{len(result['index_sizes'])} index(es)"]
+            label.textContent = " · ".join(parts)
 
     # -- column layout (ROADMAP phase 35) ---------------------------------
 

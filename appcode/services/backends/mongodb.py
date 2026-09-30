@@ -57,6 +57,12 @@ class MongoBackend:
     name = "mongodb"
     label = "MongoDB"
 
+    @property
+    def capabilities(self) -> frozenset:
+        from services.backends import CAPABILITIES
+
+        return frozenset(CAPABILITIES)
+
     def validate(self, profile: dict) -> dict:
         """The Form checks the same things in the browser; this is the copy that counts."""
         errors: dict = {}

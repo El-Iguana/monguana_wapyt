@@ -39,10 +39,11 @@ def fingerprint(backend_name: str, options: dict) -> str:
 
 
 class _Entry:
-    __slots__ = ("client", "fingerprint", "last_used")
+    __slots__ = ("client", "backend", "fingerprint", "last_used")
 
-    def __init__(self, client: Any, digest: str) -> None:
+    def __init__(self, client: Any, backend: Any, digest: str) -> None:
         self.client = client
+        self.backend = backend
         self.fingerprint = digest
         self.last_used = time.monotonic()
 
@@ -58,8 +59,12 @@ class MongoPool:
         self._lock = threading.Lock()
 
     def client(self, user_id: int, conn_id: int) -> Any:
+        return self.open(user_id, conn_id)[0]
+
+    def open(self, user_id: int, conn_id: int) -> tuple[Any, Any]:
         """
-        The live client for a profile the caller owns, dialling if needed.
+        The live client for a profile the caller owns, dialling if needed,
+        and the backend that built it (for its ``capabilities``).
 
         The profile is re-read every time — one indexed SQLite lookup — so an
         edited profile takes effect on the next call instead of when the stale
@@ -81,13 +86,13 @@ class MongoPool:
                 stale.append(entry.client)
                 entry = None
             if entry is None:
-                entry = _Entry(backend.open(options), digest)
+                entry = _Entry(backend.open(options), backend, digest)
                 self._entries[key] = entry
             entry.last_used = time.monotonic()
-            client = entry.client
+            client, built_by = entry.client, entry.backend
         for old in stale:
             close_quietly(old)
-        return client
+        return client, built_by
 
     def close(self, user_id: int, conn_id: int) -> None:
         with self._lock:

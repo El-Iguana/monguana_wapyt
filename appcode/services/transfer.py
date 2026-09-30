@@ -75,16 +75,21 @@ def _require_csrf(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CSRF validation failed")
 
 
-def _client(user_id: int, conn_id: int):
+def _client(user_id: int, conn_id: int, needs: str = ""):
+    """The pooled client; ``needs`` names a backend capability (409 without it)."""
     from services.backends import BackendUnavailable
     from services.mongo_pool import ProfileNotFound, pool
 
     try:
-        return pool.client(user_id, conn_id)
+        client, backend = pool.open(user_id, conn_id)
     except ProfileNotFound:
         raise HTTPException(status_code=404, detail="Connection not found") from None
     except BackendUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    if needs and needs not in backend.capabilities:
+        raise HTTPException(status_code=409,
+                            detail=f"{backend.label} connections cannot do this ({needs})")
+    return client
 
 
 def _safe_filename(*parts: str) -> str:
@@ -305,7 +310,7 @@ async def restore(request: Request, conn_id: int, mode: str = "skip", db: str = 
     target_db = (db or "").strip()
     if target_db in SYSTEM_DATABASES:
         raise HTTPException(status_code=400, detail=f"{target_db} is a system database")
-    client = _client(user_id, conn_id)
+    client = _client(user_id, conn_id, needs="dump_restore")
 
     limit = max_restore_bytes()
     declared = request.headers.get("content-length")
