@@ -76,7 +76,9 @@ CAPABILITIES = {
     "time_limits": "maxTimeMS; else no server-side limit",
     "collmod": "in-place index changes and hidden indexes; else rebuilds, and no hiding",
     "ttl_indexes": "TTL indexes; else hidden",
-    "dump_restore": "raw-BSON dump and restore; else hidden",
+    "raw_bson": "RawBSONDocument reads and writes for dump, restore and copy; else "
+                "documents are decoded and encoded",
+    "bulk_write": "batched upserts for Merge; else one replace per document",
     "hello": "replica-set status; else none",
 }
 
