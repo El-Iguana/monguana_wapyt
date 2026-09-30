@@ -273,8 +273,9 @@ carries each profile's capabilities to the UI, which hides the tree entries
 (through wapyt's new `TreeAction(requires=…)`), Explain, the capped, TTL and
 Hidden fields, and Hide/unhide. Live tests run every fallback and refusal
 against MongoDB through a backend declaring none; a browser check compared
-that profile's menus and dialogs with a full MongoDB one. **Needs wapyt's
-`requires`**: bump `WAPYT_REF` in the Containerfile once that is merged.
+that profile's menus and dialogs with a full MongoDB one. It needs wapyt's
+`requires` (WAwesome-AI/wa_pytincture_widgetset#17): `WAPYT_REF` is pinned to
+its merge, `d3fecf4`.
 
 Let a connection point at something other than a MongoDB server, starting with
 **tinymongo** (`../tinymongo`, PyPI `tinymongo`): a PyMongo-shaped library
