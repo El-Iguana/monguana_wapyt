@@ -25,6 +25,10 @@ A backend is any object with:
 ``test(options) -> dict``
     Dial a throwaway client: ``{"ok": True, "version": str, "ms": int}`` or
     ``{"ok": False, "error": str}``. Never pooled.
+``capabilities``
+    The names from :data:`CAPABILITIES` this backend supports. MongoDB has
+    them all. Without one, ``MongoService`` falls back to something simpler
+    or refuses, and the UI hides what would be refused.
 """
 from __future__ import annotations
 
@@ -32,6 +36,23 @@ import threading
 from typing import Any
 
 DEFAULT = "mongodb"
+
+# What a backend may lack, and what Monguana does without it.
+CAPABILITIES = {
+    "authorized_listing": "list_databases(authorizedDatabases=True); else a plain listing",
+    "collection_types": "list_collections with types (views, timeseries); else names only",
+    "create_collection": "explicit, empty collections and so new databases; else hidden",
+    "capped": "capped collections; else hidden",
+    "rename": "renaming a collection; else hidden",
+    "stats": "$collStats sizes; else a document count only",
+    "sample": "$sample; else the first documents",
+    "explain": "query plans; else hidden",
+    "time_limits": "maxTimeMS; else no server-side limit",
+    "collmod": "in-place index changes and hidden indexes; else rebuilds, and no hiding",
+    "ttl_indexes": "TTL indexes; else hidden",
+    "dump_restore": "raw-BSON dump and restore; else hidden",
+    "hello": "replica-set status; else none",
+}
 
 
 class BackendUnavailable(LookupError):

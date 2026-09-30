@@ -418,3 +418,111 @@ def test_an_edited_document_keeps_its_int64s(env):
     ok(mongo.replace(conn, DB, "longs", row["id"], json.dumps(doc)))
     stored = pool.client(1, conn)[DB]["longs"].find_one({"_id": "x"})
     assert type(stored["n"]) is Int64 and type(stored["i"]) is int and stored["note"] == "edited"
+
+
+# ----------------------------------------------------------------------
+# Phase 39: a backend with no optional capabilities, on the same server.
+# Every fallback runs against real MongoDB; everything else is refused.
+# ----------------------------------------------------------------------
+
+LIMITED_DB = f"{DB}_limited"
+
+
+@pytest.fixture(scope="module")
+def limited(env):
+    from services import backends
+    from services.backends.mongodb import MongoBackend
+
+    class LimitedMongo(MongoBackend):
+        name = "mongodb-limited"
+        label = "Limited"
+        capabilities = frozenset()
+
+    backends.register(LimitedMongo())
+    host, port, *rest = SPEC.split(":", 3)
+    saved = env["conns"].save(
+        name="limited", backend="mongodb-limited", host=host, port=int(port),
+        username=rest[0] if rest else "", password=rest[1] if len(rest) > 1 else "",
+    )
+    assert saved["ok"], saved
+    ok(env["mongo"].insert(env["conn"], LIMITED_DB, "items",
+                           "[{_id: 1, n: 1}, {_id: 2, n: 2}, {_id: 3, n: 2}]"))
+    yield saved["id"]
+    env["mongo"].drop_database(env["conn"], LIMITED_DB)
+    with backends._lock:
+        backends._registry.pop("mongodb-limited", None)
+
+
+def test_the_list_carries_each_backends_capabilities(env, limited):
+    from services.backends import CAPABILITIES
+
+    rows = {row["id"]: row for row in env["conns"].list()}
+    assert rows[env["conn"]]["capabilities"] == sorted(CAPABILITIES)
+    assert rows[env["conn"]]["backend_label"] == "MongoDB"
+    assert rows[limited]["capabilities"] == []
+    assert rows[limited]["backend_label"] == "Limited"
+
+
+def test_limited_fallbacks_still_work(env, limited):
+    mongo = env["mongo"]
+    assert any(row["name"] == LIMITED_DB for row in ok(mongo.databases(limited))["databases"])
+    colls = ok(mongo.collections(limited, LIMITED_DB))["collections"]
+    assert colls == [{"name": "items", "type": "collection", "system": False}]
+
+    stats = ok(mongo.stats(limited, LIMITED_DB, "items"))
+    assert stats["count"] == 3 and stats["size"] is None and stats["index_sizes"] == {}
+
+    schema = ok(mongo.schema(limited, LIMITED_DB, "items", 2))
+    assert schema["sampled"] == 2 and [row["path"] for row in schema["fields"]] == ["_id", "n"]
+
+    found = ok(mongo.find(limited, LIMITED_DB, "items", "{n: 2}", "{_id: -1}"))
+    assert [row["doc"]["_id"] for row in found["docs"]] == [3, 2] and found["total"] == 2
+    assert ok(mongo.count(limited, LIMITED_DB, "items", "{n: 2}"))["total"] == 2
+    grouped = ok(mongo.aggregate(limited, LIMITED_DB, "items", "[{$group: {_id: '$n'}}]"))
+    assert len(grouped["docs"]) == 2
+    assert ok(mongo.preview_write(limited, LIMITED_DB, "items", "{n: 2}"))["matched"] == 2
+
+
+def test_limited_refuses_what_it_cannot_do(env, limited):
+    mongo = env["mongo"]
+
+    def refused(result: dict) -> str:
+        assert not result["ok"], result
+        return result["error"]
+
+    assert refused(mongo.explain(limited, LIMITED_DB, "items")) == \
+        "Limited connections cannot explain queries"
+    assert "rename" in refused(mongo.rename_collection(limited, LIMITED_DB, "items", "x"))
+    assert "empty collections" in refused(mongo.create_collection(limited, LIMITED_DB, "x"))
+    assert "empty databases" in refused(mongo.create_database(limited, f"{LIMITED_DB}2", "x"))
+    assert "TTL" in refused(mongo.create_index(limited, LIMITED_DB, "items", "{n: 1}",
+                                               ttl_seconds=60))
+    assert "hide" in refused(mongo.create_index(limited, LIMITED_DB, "items", "{n: 1}",
+                                                hidden=True))
+    assert "hide" in refused(mongo.set_index_hidden(limited, LIMITED_DB, "items", "x", True))
+
+    from services.job_service import JobService
+
+    assert refused(JobService(env["user"]).start_dump(limited, LIMITED_DB)) == \
+        "Limited connections cannot be dumped"
+    # Nothing of the above reached the server.
+    names = [row["name"] for row in ok(mongo.collections(env["conn"], LIMITED_DB))["collections"]]
+    assert names == ["items"]
+
+
+def test_limited_index_changes_rebuild_instead_of_collmod(env, limited):
+    mongo = env["mongo"]
+    ok(mongo.create_index(limited, LIMITED_DB, "items", "{n: 1}", name="n_1"))
+    plan = ok(mongo.update_index(limited, LIMITED_DB, "items", "n_1", "{n: 1}",
+                                 sparse=False, unique=False, dry_run=True))
+    assert plan["strategy"] == "none"
+    # Unique on is collMod on MongoDB; without it, a rebuild. n repeats, so the
+    # unique build fails and the old index must come back.
+    plan = ok(mongo.update_index(limited, LIMITED_DB, "items", "n_1", "{n: 1}",
+                                 unique=True, dry_run=True))
+    assert plan["strategy"] == "drop-then-build" and plan["changes"] == ["unique on"]
+    failed = mongo.update_index(limited, LIMITED_DB, "items", "n_1", "{n: 1}", unique=True)
+    assert not failed["ok"] and "restored" in failed["error"]
+    names = [row["name"] for row in ok(mongo.indexes(limited, LIMITED_DB, "items"))["indexes"]]
+    assert "n_1" in names
+    ok(mongo.drop_index(limited, LIMITED_DB, "items", "n_1"))

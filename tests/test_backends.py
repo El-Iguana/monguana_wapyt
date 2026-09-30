@@ -22,6 +22,7 @@ class FakeClient:
 class FakeBackend:
     name = "fake"
     label = "Fake"
+    capabilities = frozenset({"rename"})
 
     def validate(self, profile: dict) -> dict:
         folder = (profile.get("options") or {}).get("folder", "")
@@ -179,6 +180,10 @@ def test_list_duplicate_and_mongodb_default(conns, data):
     assert by_name["server"]["backend"] == "mongodb"
     assert by_name["files"]["backend"] == "fake"
     assert "options" not in by_name["files"]
+    # What the UI may offer, per profile (phase 39, step 2).
+    assert by_name["files"]["capabilities"] == ["rename"]
+    assert by_name["files"]["backend_label"] == "Fake"
+    assert "explain" in by_name["server"]["capabilities"]
 
     copy = conns.duplicate(files["id"])
     profile = data.fetch_connection(copy["id"], 1)

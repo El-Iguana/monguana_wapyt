@@ -55,6 +55,9 @@ class MongoService:
     def __init__(self, _user: dict = None) -> None:
         self._user = _user or {}
         self._user_id = current_user_id(self._user)
+        # The backend behind the last client handed out. One call works on
+        # one connection, and the instance lives for one call.
+        self._backend = None
 
     # ------------------------------------------------------------------
     # Plumbing
@@ -63,12 +66,28 @@ class MongoService:
     def _client(self, conn_id: int):
         if not self._user_id:
             raise _Refused("Not authenticated")
+        from services.backends import BackendUnavailable
         from services.mongo_pool import ProfileNotFound, pool
 
         try:
-            return pool.client(self._user_id, int(conn_id))
+            client, self._backend = pool.open(self._user_id, int(conn_id))
         except ProfileNotFound:
             raise _Refused("Connection not found") from None
+        except BackendUnavailable as exc:
+            raise _Refused(str(exc)) from None
+        return client
+
+    def _can(self, capability: str) -> bool:
+        """Whether the backend of the client last handed out supports this."""
+        return self._backend is None or capability in self._backend.capabilities
+
+    def _require(self, capability: str, what: str) -> None:
+        if not self._can(capability):
+            raise _Refused(f"{self._backend.label} connections cannot {what}")
+
+    def _time_limit(self, ms: int, keyword: str = "maxTimeMS") -> dict:
+        """A server-side time limit as a keyword argument, where there is one."""
+        return {keyword: ms} if self._can("time_limits") else {}
 
     def _collection(self, conn_id: int, db: str, coll: str):
         _check_db_name(db)
@@ -105,7 +124,7 @@ class MongoService:
         def work() -> dict:
             client = self._client(conn_id)
             info = client.server_info()
-            hello = client.admin.command("hello")
+            hello = client.admin.command("hello") if self._can("hello") else {}
             return {
                 "version": info.get("version", ""),
                 "set_name": hello.get("setName", ""),
@@ -126,7 +145,8 @@ class MongoService:
 
             client = self._client(conn_id)
             try:
-                listing = client.list_databases(authorizedDatabases=True)
+                listing = (client.list_databases(authorizedDatabases=True)
+                           if self._can("authorized_listing") else client.list_databases())
                 rows = [
                     {
                         "name": item["name"],
@@ -152,13 +172,17 @@ class MongoService:
         def work() -> dict:
             _check_db_name(db)
             database = self._client(conn_id)[db]
+            if self._can("collection_types"):
+                listing = database.list_collections(authorizedCollections=True, nameOnly=True)
+            else:
+                listing = ({"name": name} for name in database.list_collection_names())
             rows = [
                 {
                     "name": item["name"],
                     "type": item.get("type", "collection"),
                     "system": item["name"].startswith("system."),
                 }
-                for item in database.list_collections(authorizedCollections=True, nameOnly=True)
+                for item in listing
             ]
             rows.sort(key=lambda row: (row["system"], row["name"].lower()))
             return {"collections": rows}
@@ -175,6 +199,7 @@ class MongoService:
             first = (collection or "").strip()
             _check_collection_name(first)
             client = self._client(conn_id)
+            self._require("create_collection", "create empty databases")
             if name in client.list_database_names():
                 raise _Refused(f"Database {name!r} already exists")
             client[name].create_collection(first)
@@ -200,14 +225,17 @@ class MongoService:
             _check_db_name(db)
             coll = (name or "").strip()
             _check_collection_name(coll)
+            client = self._client(conn_id)
+            self._require("create_collection", "create empty collections")
             options: dict = {}
             if capped:
+                self._require("capped", "create capped collections")
                 if int(size or 0) <= 0:
                     raise _Refused("A capped collection needs a size in bytes")
                 options = {"capped": True, "size": int(size)}
                 if int(max_docs or 0) > 0:
                     options["max"] = int(max_docs)
-            self._client(conn_id)[db].create_collection(coll, **options)
+            client[db].create_collection(coll, **options)
             return {"db": db, "collection": coll}
 
         return self._guard(work)
@@ -215,7 +243,10 @@ class MongoService:
     def drop_collection(self, conn_id: int, db: str, coll: str) -> dict:
         def work() -> dict:
             collection = self._collection(conn_id, db, coll)
-            if not collection.database.list_collection_names(filter={"name": coll}):
+            names = (collection.database.list_collection_names(filter={"name": coll})
+                     if self._can("collection_types") else
+                     [name for name in collection.database.list_collection_names() if name == coll])
+            if not names:
                 raise _Refused(f"Collection {coll!r} not found")
             collection.drop()
             return {"dropped": coll}
@@ -228,15 +259,26 @@ class MongoService:
             _check_collection_name(target)
             if target == coll:
                 raise _Refused("That is already its name")
-            self._collection(conn_id, db, coll).rename(target, dropTarget=False)
+            collection = self._collection(conn_id, db, coll)
+            self._require("rename", "rename collections")
+            collection.rename(target, dropTarget=False)
             return {"db": db, "old": coll, "new": target}
 
         return self._guard(work)
 
     def stats(self, conn_id: int, db: str, coll: str) -> dict:
-        """Counts and sizes, from ``$collStats`` (``collStats`` is deprecated)."""
+        """
+        Counts and sizes, from ``$collStats`` (``collStats`` is deprecated).
+        A backend without it gets the count alone; the sizes are ``None``.
+        """
         def work() -> dict:
             collection = self._collection(conn_id, db, coll)
+            if not self._can("stats"):
+                return {
+                    "count": collection.count_documents({}),
+                    "size": None, "avg_obj_size": None, "storage_size": None,
+                    "total_index_size": None, "index_sizes": {}, "capped": False,
+                }
             rows = list(collection.aggregate([{"$collStats": {"storageStats": {}}}]))
             storage = (rows[0] if rows else {}).get("storageStats", {})
             return {
@@ -285,7 +327,9 @@ class MongoService:
             key_list, index_options = _index_spec(
                 keys, name, unique, sparse, ttl_seconds, partial, hidden, options
             )
-            created = self._collection(conn_id, db, coll).create_index(key_list, **index_options)
+            collection = self._collection(conn_id, db, coll)
+            self._check_index_options(index_options)
+            created = collection.create_index(key_list, **index_options)
             return {"name": created}
 
         return self._guard(work)
@@ -327,6 +371,7 @@ class MongoService:
             key_list, index_options = _index_spec(
                 keys, final_name, unique, sparse, ttl_seconds, partial, hidden, options
             )
+            self._check_index_options(index_options)
             desired = {
                 "keys": dict(key_list),
                 "name": final_name,
@@ -362,6 +407,10 @@ class MongoService:
                 in_place.append((f"TTL {desired['ttl']}s", {"expireAfterSeconds": desired["ttl"]}))
             if desired["unique"] and not current["unique"]:
                 in_place.append(("unique on", {"unique": True}))
+            if in_place and not self._can("collmod"):
+                # No collMod: what MongoDB changes in place is a rebuild here.
+                rebuild.extend(label for label, _ in in_place)
+                in_place = []
 
             if rebuild:
                 strategy = "build-then-drop" if final_name != name else "drop-then-build"
@@ -389,7 +438,9 @@ class MongoService:
         def work() -> dict:
             if name == "_id_":
                 raise _Refused("The _id index cannot be hidden")
-            _coll_mod(self._collection(conn_id, db, coll), name, {"hidden": bool(hidden)})
+            collection = self._collection(conn_id, db, coll)
+            self._require("collmod", "hide indexes")
+            _coll_mod(collection, name, {"hidden": bool(hidden)})
             return {"name": name, "hidden": bool(hidden)}
 
         return self._guard(work)
@@ -419,9 +470,15 @@ class MongoService:
             collection = self._collection(conn_id, db, coll)
             fields: dict[str, dict] = {}
             seen = 0
-            for doc in collection.aggregate(
-                [{"$sample": {"size": size}}], maxTimeMS=QUERY_TIME_LIMIT_MS
-            ):
+            if self._can("sample"):
+                docs = collection.aggregate([{"$sample": {"size": size}}],
+                                            **self._time_limit(QUERY_TIME_LIMIT_MS))
+            else:
+                # Not random: the first documents, which is what the UI can
+                # say about a backend without $sample.
+                docs = collection.find({}, **self._time_limit(
+                    QUERY_TIME_LIMIT_MS, "max_time_ms")).limit(size)
+            for doc in docs:
                 seen += 1
                 _collect_paths(doc, "", fields, depth=0)
             rows = [
@@ -456,7 +513,8 @@ class MongoService:
             number = max(1, int(page or 1))
 
             collection = self._collection(conn_id, db, coll)
-            cursor = collection.find(query, fields, max_time_ms=QUERY_TIME_LIMIT_MS)
+            cursor = collection.find(query, fields,
+                                     **self._time_limit(QUERY_TIME_LIMIT_MS, "max_time_ms"))
             if order:
                 cursor = cursor.sort(list(order.items()))
             docs = list(cursor.skip((number - 1) * size).limit(size))
@@ -467,7 +525,7 @@ class MongoService:
             # and a filtered one admits it does not know.
             exact = True
             try:
-                total = collection.count_documents(query, maxTimeMS=COUNT_TIME_LIMIT_MS)
+                total = collection.count_documents(query, **self._time_limit(COUNT_TIME_LIMIT_MS))
             except ExecutionTimeout:
                 exact = False
                 total = collection.estimated_document_count() if not query else None
@@ -491,9 +549,8 @@ class MongoService:
 
             query = mql.parse_object(filter, "filter")
             mql.check_query(query)
-            total = self._collection(conn_id, db, coll).count_documents(
-                query, maxTimeMS=QUERY_TIME_LIMIT_MS
-            )
+            collection = self._collection(conn_id, db, coll)
+            total = collection.count_documents(query, **self._time_limit(QUERY_TIME_LIMIT_MS))
             return {"total": total}
 
         return self._guard(work)
@@ -505,7 +562,9 @@ class MongoService:
             query = mql.parse_object(filter, "filter")
             mql.check_query(query)
             order = mql.parse_object(sort, "sort")
-            cursor = self._collection(conn_id, db, coll).find(query)
+            collection = self._collection(conn_id, db, coll)
+            self._require("explain", "explain queries")
+            cursor = collection.find(query)
             if order:
                 cursor = cursor.sort(list(order.items()))
             plan = cursor.explain()
@@ -543,9 +602,10 @@ class MongoService:
             from services import mql
 
             stages = mql.parse_pipeline(pipeline)
-            cursor = self._collection(conn_id, db, coll).aggregate(
+            collection = self._collection(conn_id, db, coll)
+            cursor = collection.aggregate(
                 [*stages, {"$limit": MAX_AGGREGATE_RESULTS + 1}],
-                maxTimeMS=QUERY_TIME_LIMIT_MS,
+                **self._time_limit(QUERY_TIME_LIMIT_MS),
             )
             docs = list(cursor)
             truncated = len(docs) > MAX_AGGREGATE_RESULTS
@@ -620,10 +680,10 @@ class MongoService:
             mql.check_query(query)
             collection = self._collection(conn_id, db, coll)
             if multi:
-                matched = collection.count_documents(query, maxTimeMS=QUERY_TIME_LIMIT_MS)
+                matched = collection.count_documents(query, **self._time_limit(QUERY_TIME_LIMIT_MS))
             else:
                 matched = collection.count_documents(query, limit=1)
-            docs = list(collection.find(query, max_time_ms=QUERY_TIME_LIMIT_MS)
+            docs = list(collection.find(query, **self._time_limit(QUERY_TIME_LIMIT_MS, "max_time_ms"))
                         .limit(PREVIEW_DOCS if multi else 1))
             return {"matched": matched, "docs": [_row(doc) for doc in docs]}
 
@@ -691,6 +751,12 @@ class MongoService:
             return {"matched": result.matched_count, "modified": result.modified_count}
 
         return self._guard(work)
+
+    def _check_index_options(self, index_options: dict) -> None:
+        if "expireAfterSeconds" in index_options:
+            self._require("ttl_indexes", "create TTL indexes")
+        if index_options.get("hidden"):
+            self._require("collmod", "hide indexes")
 
 
 # ----------------------------------------------------------------------
