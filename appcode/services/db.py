@@ -13,6 +13,7 @@ of the ``connections`` table anywhere.
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sqlite3
@@ -152,10 +153,14 @@ CREATE TABLE IF NOT EXISTS users (
 -- A connection profile. Either host/port/credentials, or a full connection
 -- string in `uri` (Atlas, replica sets, anything mongodb+srv://), which then
 -- wins. `uri` can embed a password, so it is encrypted like `password`.
+-- `backend` names what the profile points at (services/backends); `options`
+-- holds that backend's own settings as JSON, encrypted like `uri`.
 CREATE TABLE IF NOT EXISTS connections (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name         TEXT    NOT NULL,
+    backend      TEXT    NOT NULL DEFAULT 'mongodb',
+    options      TEXT    NOT NULL DEFAULT '',
     folder       TEXT    NOT NULL DEFAULT '',
     host         TEXT    NOT NULL DEFAULT '',
     port         INTEGER NOT NULL DEFAULT 27017,
@@ -194,6 +199,13 @@ _KNOWN_DEFAULTS = (DEFAULT_ADMIN_PASSWORD, "changeme")
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Columns added after a database was first created."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(connections)")}
+    # Phase 39: every profile saved before backends existed is a MongoDB one.
+    if "backend" not in columns:
+        conn.execute("ALTER TABLE connections ADD COLUMN backend TEXT NOT NULL DEFAULT 'mongodb'")
+    if "options" not in columns:
+        conn.execute("ALTER TABLE connections ADD COLUMN options TEXT NOT NULL DEFAULT ''")
+
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
     if "must_change_pw" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN must_change_pw INTEGER NOT NULL DEFAULT 0")
@@ -252,4 +264,19 @@ def fetch_connection(conn_id: int, user_id: int) -> Optional[dict]:
     profile = dict(row)
     profile["password"] = decrypt(profile.get("password") or "")
     profile["uri"] = decrypt(profile.get("uri") or "")
+    profile["options"] = decode_options(profile.get("options") or "")
     return profile
+
+
+def encode_options(options: Optional[dict]) -> str:
+    """A backend's settings as stored: JSON, encrypted (they may hold secrets)."""
+    if not options:
+        return ""
+    return encrypt(json.dumps(options, sort_keys=True))
+
+
+def decode_options(stored: str) -> dict:
+    if not stored:
+        return {}
+    value = json.loads(decrypt(stored))
+    return value if isinstance(value, dict) else {}

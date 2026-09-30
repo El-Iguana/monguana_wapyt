@@ -38,7 +38,10 @@ appcode/                    # pytincture modules_path
     docfmt.py               #   display helpers                      (BOTH sides)
     querybuilder.py         #   visual query builder -> filter text  (BOTH sides)
     pipeline_text.py        #   pipeline text <-> stage cards         (BOTH sides)
-    mongo_pool.py           #   MongoClient pool — plain module, NOT a BFF
+    mongo_pool.py           #   client pool — plain module, NOT a BFF
+    backends/               #   what a profile points at (phase 39) — plain, NOT BFFs
+      __init__.py           #     registry: get / for_profile / register
+      mongodb.py            #     the built-in MongoDB backend (client options, test)
     connection_service.py   #   BFF: profiles, test, connect/disconnect
     mongo_service.py        #   BFF: databases, collections, documents, indexes…
     user_service.py         #   BFF: accounts (from IguanaXterm)
@@ -278,7 +281,7 @@ unknown — the UI offers Count).
 
 ### Credentials
 
-`mongo_pool.client_options` passes `username`/`password` as keyword
+`backends.mongodb.client_options` passes `username`/`password` as keyword
 arguments. The original formatted them into `mongodb://user:pass@host`, so a
 password with `@`, `:` or `/` (the test container's has all three) produced a
 different URI entirely. A profile may instead hold a full connection string
@@ -288,10 +291,14 @@ In the editor, a single space in *Connection string* clears a stored one.
 
 ### The pool
 
-One `MongoClient` per `(user_id, connection_id)`. It re-reads the profile on
-each call (one indexed SQLite lookup) and rebuilds the client when the
-options fingerprint changes, so an edited profile applies at once. Idle
-clients close after 15 minutes.
+One client per `(user_id, connection_id)`, built by the profile's backend
+(`connections.backend`, `services/backends/`; a `MongoClient` for MongoDB). It
+re-reads the profile on each call (one indexed SQLite lookup) and rebuilds the
+client when the fingerprint of backend + connect options changes, so an edited
+profile applies at once. Idle clients close after 15 minutes. A profile whose
+backend is not installed fails with `BackendUnavailable`, shown as an error.
+A backend's own settings live in `connections.options` (JSON, Fernet-encrypted,
+kept by `save` when omitted).
 
 ### Plain routes for bytes — `transfer.py`, under `/mg`
 

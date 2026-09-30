@@ -24,6 +24,7 @@ class JobService:
         if not self._user_id:
             return {"ok": False, "error": "Not authenticated"}
         from services import jobs
+        from services.backends import BackendUnavailable
         from services.mongo_pool import ProfileNotFound, pool
         from services.transfer import _safe_filename, write_dump
 
@@ -31,6 +32,8 @@ class JobService:
             client = pool.client(self._user_id, int(conn_id))
         except ProfileNotFound:
             return {"ok": False, "error": "Connection not found"}
+        except BackendUnavailable as exc:
+            return {"ok": False, "error": str(exc)}
         path = jobs.new_file(".zip")
         title = f"Dump {db}.{coll}" if coll else f"Dump {db}"
         try:
