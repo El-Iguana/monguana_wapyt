@@ -334,7 +334,11 @@ folder to the root on save *and* on every open. Traps, all measured:
   no `time_limits`. Descending index keys, update pipelines and collations are
   refused with tinymongo's own messages.
 - `get_collection(codec_options=RawBSONDocument)` silently returns plain
-  dicts, which is why dump/restore stay off until step 5.
+  dicts, hence the `raw_bson` capability (step 5): without it, dump encodes
+  decoded documents and restore/copy decode with `transfer.decoded_codec()`
+  (tz-aware UTC, standard UUIDs).
+- Int64 comes back as `int`: a small `NumberLong` returns from a trip through
+  tinymongo as Int32 (`test_copy_mongodb_to_tinymongo_and_back` pins it).
 - The editor's backend fields are `opt_<id>` in the form; `_save` maps the
   service's errors (keyed by the backend's ids) back onto them.
 
@@ -367,7 +371,18 @@ read raw BSON (`RawBSONDocument`) so documents are never decoded and
 re-encoded. Note `insert_many` returns an empty `inserted_ids` for
 `RawBSONDocument`s — restore counts the batch instead.
 
-### Dump and restore are jobs (ROADMAP phase 36)
+### Dump and restore are jobs (ROADMAP phase 36; copy, phase 39)
+
+Since phase 39 step 5 they work on every backend: `write_dump`,
+`restore_archive` and `copy_collections` take the backend's capabilities.
+`raw_bson` keeps documents as `RawBSONDocument` end to end (copy only when
+*both* sides have it); `bulk_write` batches Merge's upserts, else one
+`replace_one` each. `_Writer` is the one place documents are written (skip,
+drop, merge) and creates indexes **one at a time**, so an index the target
+refuses is reported and the rest still land. `JobService.start_copy` copies a
+database or a collection between any two of the caller's connections, and
+refuses a copy onto itself. The UI's **Copy … to…** dialog starts it and
+follows it in the same job console, refreshing the target at the end.
 
 `services/jobs.py` is the registry — a **plain module**, since a BFF module is
 re-executed per call and would hand each poll an empty one. A job runs its work
@@ -571,6 +586,8 @@ Every gap from the original is closed (ROADMAP phases 31–37). ROADMAP.md
 lists what the rewrite still does not do: reading a filter back into the
 builder, and a live progress bar for export. Phase 38 plans a native
 Windows installer (no Docker, no HTTPS, browser only).
+Phase 39 (done) added backends: tinymongo stores and plugins, with dump,
+restore and copy between any of them.
 
 ## Conventions
 

@@ -254,6 +254,109 @@ def test_what_tinymongo_cannot_do_is_refused_with_a_reason(store):
     # tinymongo's own refusals come through as text.
     assert "$sample" in refused(mongo.aggregate(conn, "shop", "orders", "[{$sample: {size: 1}}]"))
 
-    from services.job_service import JobService
 
-    assert "cannot be dumped" in refused(JobService({"user_id": 1}).start_dump(conn, "shop"))
+# ----------------------------------------------------------------------
+# Dump, restore and copy (phase 39, step 5)
+# ----------------------------------------------------------------------
+
+TYPED = """[
+    {_id: 1, n: NumberDecimal("10.50"), when: ISODate("2026-01-01T00:00:00Z"), tags: ["a"]},
+    {_id: ObjectId("65a1b2c3d4e5f60718293a4b"), key: UUID("12345678-1234-5678-1234-567812345678"),
+     nested: {deep: {x: 1.5}}},
+    {_id: "three", s: "x"},
+]"""
+
+
+def _docs(client, db: str, coll: str) -> list:
+    return sorted(client[db][coll].find(), key=lambda doc: str(doc["_id"]))
+
+
+def _caps(conn):
+    from services.mongo_pool import pool
+
+    return frozenset(pool.open(1, conn)[1].capabilities)
+
+
+def test_dump_and_restore_round_trip(store, tmp_path):
+    import zipfile
+
+    import bson
+
+    from services.mongo_pool import pool
+    from services.transfer import restore_archive, write_dump
+
+    mongo, conn = store["mongo"], store["conn"]
+    ok(mongo.insert(conn, "shop", "orders", TYPED))
+    ok(mongo.create_index(conn, "shop", "orders", "{s: 1}", name="s_1"))
+    client, caps = pool.client(1, conn), _caps(conn)
+    assert "raw_bson" not in caps and "bulk_write" not in caps
+
+    path = tmp_path / "dump.zip"
+    summary = write_dump(client, "shop", "", path, capabilities=caps)
+    assert summary["collections"] == [{"collection": "orders", "documents": 3, "indexes": 2}]
+    with zipfile.ZipFile(path) as archive:
+        decoded = bson.decode_all(archive.read("shop/orders.bson"))
+    assert len(decoded) == 3  # plain BSON: mongorestore could read it
+
+    def restore(mode: str) -> dict:
+        with open(path, "rb") as archive:
+            return restore_archive(client, archive, mode, "copy", capabilities=caps)[
+                "collections"][0]
+
+    first = restore("skip")
+    assert (first["inserted"], first["indexes"], first["errors"]) == (3, 1, [])
+    assert _docs(client, "copy", "orders") == _docs(client, "shop", "orders")
+    assert restore("skip")["skipped"] == 3
+    client["copy"]["orders"].update_one({"_id": "three"}, {"$set": {"s": "changed"}})
+    merged = restore("merge")  # one replace per document: no bulk_write
+    assert merged["replaced"] == 3
+    assert client["copy"]["orders"].find_one({"_id": "three"})["s"] == "x"
+    assert restore("drop")["inserted"] == 3
+
+
+def test_copy_between_engines_and_the_job(services, root):
+    import time
+
+    from services import jobs
+    from services.job_service import JobService
+    from services.mongo_pool import pool
+
+    conns, mongo = services
+    (root / "a").mkdir()
+    (root / "b").mkdir()
+    source = ok(conns.save(name="a", backend="tinymongo",
+                           options={"engine": "sqlite", "folder": "a"}))["id"]
+    target = ok(conns.save(name="b", backend="tinymongo",
+                           options={"engine": "json", "folder": "b"}))["id"]
+    ok(mongo.insert(source, "shop", "orders", TYPED))
+    ok(mongo.insert(source, "shop", "people", "[{_id: 1, name: 'Ada'}]"))
+    ok(mongo.create_index(source, "shop", "orders", "{s: 1}", name="s_1"))
+
+    service = JobService({"user_id": 1})
+    assert "onto itself" in refused(service.start_copy(source, "shop", source, "shop"))
+    assert "system" in refused(service.start_copy(source, "shop", target, "admin"))
+    assert "mode" in refused(service.start_copy(source, "shop", target, "x", mode="nuke"))
+    assert "valid" in refused(service.start_copy(source, "shop", target, "a.b"))
+
+    started = ok(service.start_copy(source, "shop", target, "shop"))
+    for _ in range(100):
+        job = jobs.get(started["job"], 1)
+        if job.snapshot(0)["state"] != "running":
+            break
+        time.sleep(0.05)
+    snapshot = job.snapshot(0)
+    assert snapshot["state"] == "done", snapshot
+    a, b = pool.client(1, source), pool.client(1, target)
+    assert _docs(b, "shop", "orders") == _docs(a, "shop", "orders")
+    assert _docs(b, "shop", "people") == [{"_id": 1, "name": "Ada"}]
+    assert "s_1" in {index["name"] for index in b["shop"]["orders"].list_indexes()}
+
+    # One collection, renamed on the way.
+    started = ok(service.start_copy(source, "shop", target, "archive", coll="orders",
+                                    target_coll="old_orders"))
+    for _ in range(100):
+        if jobs.get(started["job"], 1).snapshot(0)["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert b["archive"].list_collection_names() == ["old_orders"]
+    assert len(_docs(b, "archive", "old_orders")) == 3

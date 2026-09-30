@@ -75,21 +75,21 @@ def _require_csrf(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CSRF validation failed")
 
 
-def _client(user_id: int, conn_id: int, needs: str = ""):
-    """The pooled client; ``needs`` names a backend capability (409 without it)."""
+def _open(user_id: int, conn_id: int):
+    """The pooled client and its backend (for its capabilities)."""
     from services.backends import BackendUnavailable
     from services.mongo_pool import ProfileNotFound, pool
 
     try:
-        client, backend = pool.open(user_id, conn_id)
+        return pool.open(user_id, conn_id)
     except ProfileNotFound:
         raise HTTPException(status_code=404, detail="Connection not found") from None
     except BackendUnavailable as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
-    if needs and needs not in backend.capabilities:
-        raise HTTPException(status_code=409,
-                            detail=f"{backend.label} connections cannot do this ({needs})")
-    return client
+
+
+def _client(user_id: int, conn_id: int):
+    return _open(user_id, conn_id)[0]
 
 
 def _safe_filename(*parts: str) -> str:
@@ -195,54 +195,107 @@ async def export(
 # Dump (a job: JobService.start_dump; the ZIP is fetched from here when done)
 # ---------------------------------------------------------------------------
 
-def dump_specs(database, coll: str) -> list:
-    """The collections a dump covers: one, or every ordinary one in the db."""
+def _all_capabilities() -> frozenset:
+    """MongoDB's: what callers that name no backend get (and the tests)."""
+    from services.backends import CAPABILITIES
+
+    return frozenset(CAPABILITIES)
+
+
+def decoded_codec():
+    """
+    How documents are decoded where raw BSON is not used: dates aware and UTC,
+    UUIDs standard — as on every MongoClient here (see ``backends.mongodb``).
+    """
+    import datetime as _dt
+
+    from bson.binary import UuidRepresentation
+    from bson.codec_options import CodecOptions
+
+    return CodecOptions(tz_aware=True, tzinfo=_dt.timezone.utc,
+                        uuid_representation=UuidRepresentation.STANDARD)
+
+
+def dump_specs(database, coll: str, capabilities=None) -> list:
+    """
+    The collections a dump or copy covers: one, or every ordinary one in the
+    db. Without ``collection_types`` (tinymongo) there are only names, so
+    every one counts as an ordinary collection with no options.
+    """
+    capabilities = _all_capabilities() if capabilities is None else capabilities
+    if "collection_types" in capabilities:
+        if coll:
+            specs = list(database.list_collections(filter={"name": coll}))
+            if not specs:
+                raise LookupError(f"Collection {coll!r} not found")
+            return specs
+        return [
+            spec for spec in database.list_collections()
+            if spec.get("type", "collection") == "collection"
+            and not spec["name"].startswith("system.")
+        ]
+    names = database.list_collection_names()
     if coll:
-        specs = list(database.list_collections(filter={"name": coll}))
-        if not specs:
+        if coll not in names:
             raise LookupError(f"Collection {coll!r} not found")
-        return specs
-    return [
-        spec for spec in database.list_collections()
-        if spec.get("type", "collection") == "collection"
-        and not spec["name"].startswith("system.")
-    ]
+        return [{"name": coll}]
+    return [{"name": name} for name in sorted(names) if not name.startswith("system.")]
 
 
-def write_dump(client, db: str, coll: str, path, progress=None) -> dict:
+def _estimate(collection) -> Optional[int]:
+    try:
+        return collection.estimated_document_count()
+    except Exception:  # noqa: BLE001 - a view or no privilege: no total
+        return None
+
+
+def _raw_documents(database, name: str, capabilities) -> Iterator[bytes]:
     """
-    Write a mongodump-layout ZIP to ``path``, reporting per collection.
-
-    Documents are read as raw BSON (``RawBSONDocument``) and written as they
-    come: never decoded, re-encoded or held in memory. The original held every
-    document of every collection in a list, then the whole ZIP in a BytesIO.
+    Every document of a collection as BSON bytes. With ``raw_bson`` they are
+    never decoded (``RawBSONDocument``); otherwise each is encoded here.
     """
-    from bson import json_util
+    import bson
     from bson.codec_options import CodecOptions
     from bson.raw_bson import RawBSONDocument
 
+    if "raw_bson" in capabilities:
+        raw = CodecOptions(document_class=RawBSONDocument)
+        for doc in database.get_collection(name, codec_options=raw).find():
+            yield doc.raw
+        return
+    codec = decoded_codec()
+    for doc in database[name].find():
+        yield bson.encode(doc, codec_options=codec)
+
+
+def write_dump(client, db: str, coll: str, path, progress=None, capabilities=None) -> dict:
+    """
+    Write a mongodump-layout ZIP to ``path``, reporting per collection.
+
+    Documents are streamed to the ZIP, never all held in memory. The original
+    held every document of every collection in a list, then the whole ZIP in
+    a BytesIO. ``capabilities`` are the source backend's (phase 39): without
+    ``raw_bson`` documents are encoded here.
+    """
+    from bson import json_util
+
     from services.jobs import Progress
 
+    capabilities = _all_capabilities() if capabilities is None else capabilities
     progress = progress or Progress()
-    raw = CodecOptions(document_class=RawBSONDocument)
     database = client[db]
-    specs = dump_specs(database, coll)
+    specs = dump_specs(database, coll, capabilities)
     progress.log(f"Dumping {len(specs)} collection(s) from {db}")
     summary: list = []
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         for spec in specs:
             name = spec["name"]
             key = f"{db}.{name}"
-            try:
-                estimate = database[name].estimated_document_count()
-            except Exception:  # noqa: BLE001 - a view or no privilege: no total
-                estimate = None
-            progress.item(key, key, estimate, "documents")
-            collection = database.get_collection(name, codec_options=raw)
+            progress.item(key, key, _estimate(database[name]), "documents")
             count = 0
             with archive.open(f"{db}/{name}.bson", "w", force_zip64=True) as out:
-                for doc in collection.find():
-                    out.write(doc.raw)
+                for raw in _raw_documents(database, name, capabilities):
+                    out.write(raw)
                     count += 1
                     if count % 500 == 0:
                         progress.advance(key, count)
@@ -252,7 +305,7 @@ def write_dump(client, db: str, coll: str, path, progress=None) -> dict:
                 "collectionName": name,
                 "type": spec.get("type", "collection"),
                 "options": spec.get("options", {}),
-                "indexes": indexes,
+                "indexes": [_index_metadata(index) for index in indexes],
             }
             archive.writestr(
                 f"{db}/{name}.metadata.json",
@@ -266,6 +319,16 @@ def write_dump(client, db: str, coll: str, path, progress=None) -> dict:
     size = Path(path).stat().st_size
     progress.log(f"Done: {size:,} bytes")
     return {"collections": summary, "bytes": size}
+
+
+def _index_metadata(index) -> dict:
+    """An index as mongodump writes it. tinymongo gives ``key`` as a list of pairs."""
+    info = dict(index)
+    if isinstance(info.get("key"), list):
+        from bson.son import SON
+
+        info["key"] = SON(info["key"])
+    return info
 
 
 @router.get("/jobs/{job_id}/download")
@@ -310,7 +373,8 @@ async def restore(request: Request, conn_id: int, mode: str = "skip", db: str = 
     target_db = (db or "").strip()
     if target_db in SYSTEM_DATABASES:
         raise HTTPException(status_code=400, detail=f"{target_db} is a system database")
-    client = _client(user_id, conn_id, needs="dump_restore")
+    client, backend = _open(user_id, conn_id)
+    capabilities = frozenset(backend.capabilities)
 
     limit = max_restore_bytes()
     declared = request.headers.get("content-length")
@@ -335,7 +399,8 @@ async def restore(request: Request, conn_id: int, mode: str = "skip", db: str = 
     def work(progress) -> dict:
         try:
             with open(upload, "rb") as archive:
-                return restore_archive(client, archive, mode, target_db or None, progress)
+                return restore_archive(client, archive, mode, target_db or None, progress,
+                                       capabilities)
         finally:
             upload.unlink(missing_ok=True)
 
@@ -399,24 +464,137 @@ def plan_restore(names: list[str], target_db: Optional[str]) -> tuple[list[dict]
     return jobs, skipped
 
 
+class _Writer:
+    """
+    Writes batches into one collection for restore and copy, in a mode:
+    ``skip`` keeps documents whose ``_id`` exists, ``drop`` empties the
+    collection first, ``merge`` replaces by ``_id``. ``capabilities`` are the
+    target backend's: without ``raw_bson`` it takes decoded documents, and
+    without ``bulk_write`` Merge replaces one document at a time.
+    """
+
+    def __init__(self, database, name: str, mode: str, capabilities, raw: bool) -> None:
+        from bson.codec_options import CodecOptions
+        from bson.raw_bson import RawBSONDocument
+
+        self.capabilities = capabilities
+        self.mode = mode
+        self.outcome = {
+            "db": database.name, "collection": name,
+            "inserted": 0, "replaced": 0, "skipped": 0, "errors": [], "indexes": 0,
+        }
+        self.collection = (
+            database.get_collection(name, codec_options=CodecOptions(document_class=RawBSONDocument))
+            if raw else database[name]
+        )
+        if mode == "drop":
+            self.collection.drop()
+
+    @property
+    def documents(self) -> int:
+        return self.outcome["inserted"] + self.outcome["replaced"] + self.outcome["skipped"]
+
+    def _error(self, text: str) -> None:
+        if len(self.outcome["errors"]) < 5:
+            self.outcome["errors"].append(text)
+
+    def flush(self, batch: list) -> None:
+        from pymongo import ReplaceOne
+        from pymongo.errors import BulkWriteError
+
+        if not batch:
+            return
+        if self.mode == "merge":
+            if "bulk_write" in self.capabilities:
+                result = self.collection.bulk_write(
+                    [ReplaceOne({"_id": doc["_id"]}, doc, upsert=True) for doc in batch],
+                    ordered=False,
+                )
+                self.outcome["inserted"] += result.upserted_count
+                self.outcome["replaced"] += result.matched_count
+                return
+            for doc in batch:
+                try:
+                    result = self.collection.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+                except Exception as exc:  # noqa: BLE001 - one bad document, not the batch
+                    self._error(str(exc)[:300])
+                    continue
+                if result.upserted_id is not None:
+                    self.outcome["inserted"] += 1
+                else:
+                    self.outcome["replaced"] += result.matched_count
+            return
+        try:
+            self.collection.insert_many(batch, ordered=False)
+            # Not len(result.inserted_ids): pymongo leaves that empty for
+            # RawBSONDocument inserts.
+            self.outcome["inserted"] += len(batch)
+        except BulkWriteError as exc:
+            details = exc.details or {}
+            self.outcome["inserted"] += int(details.get("nInserted") or 0)
+            for error in details.get("writeErrors", []):
+                if error.get("code") == 11000 and self.mode == "skip":
+                    self.outcome["skipped"] += 1
+                else:
+                    self._error(error.get("errmsg", "write error"))
+
+    def indexes(self, specs: list) -> None:
+        """Each index on its own: one the target refuses does not stop the rest."""
+        for index in specs:
+            if index.get("name") == "_id_":
+                continue
+            options = {
+                key: value for key, value in index.items()
+                if key not in ("key", "v", "ns", "background")
+            }
+            try:
+                self.collection.create_index(list(dict(index["key"]).items()), **options)
+                self.outcome["indexes"] += 1
+            except Exception as exc:  # noqa: BLE001 - reported, the data is in
+                self._error(f"index {index.get('name', '?')}: {str(exc)[:200]}")
+
+    def note(self) -> str:
+        outcome = self.outcome
+        parts = [f"{outcome['inserted']:,} inserted"]
+        if outcome["replaced"]:
+            parts.append(f"{outcome['replaced']:,} replaced")
+        if outcome["skipped"]:
+            parts.append(f"{outcome['skipped']:,} skipped")
+        if outcome["indexes"]:
+            parts.append(f"{outcome['indexes']} index(es)")
+        return ", ".join(parts)
+
+
+def _finish(progress, key: str, writer: _Writer, results: list, extra: dict) -> None:
+    outcome = writer.outcome
+    results.append(outcome)
+    note = writer.note()
+    progress.finish(key, "failed" if outcome["errors"] and not outcome["inserted"] else "done", note)
+    progress.log(f"{'⚠' if outcome['errors'] else '✓'} {key}: {note}")
+    for error in outcome["errors"]:
+        progress.log(f"    {error}")
+    progress.partial({"collections": results, **extra})
+
+
 def restore_archive(client, archive_file, mode: str, target_db: Optional[str],
-                    progress=None) -> dict:
+                    progress=None, capabilities=None) -> dict:
     """
     Restore every planned collection, reporting bytes read per collection
     (a member's uncompressed size is its total) and stopping between batches
     if cancelled. What was restored before a cancel is kept as the result.
+    ``capabilities`` are the target backend's (phase 39).
     """
     import bson
     from bson import json_util
     from bson.codec_options import CodecOptions
     from bson.raw_bson import RawBSONDocument
-    from pymongo import ReplaceOne
-    from pymongo.errors import BulkWriteError
 
-    from services.jobs import Progress
+    from services.jobs import Cancelled, Progress
 
+    capabilities = _all_capabilities() if capabilities is None else capabilities
     progress = progress or Progress()
-    raw = CodecOptions(document_class=RawBSONDocument)
+    raw = "raw_bson" in capabilities
+    codec = CodecOptions(document_class=RawBSONDocument) if raw else decoded_codec()
     results: list[dict] = []
     with zipfile.ZipFile(archive_file) as archive:
         members = set(archive.namelist())
@@ -429,92 +607,90 @@ def restore_archive(client, archive_file, mode: str, target_db: Optional[str],
         progress.log(f"Restoring {len(jobs)} collection(s), mode {mode}")
         for job in jobs:
             key = f"{job['db']}.{job['collection']}"
-            outcome = {
-                "db": job["db"], "collection": job["collection"],
-                "inserted": 0, "replaced": 0, "skipped": 0, "errors": [], "indexes": 0,
-            }
-            collection = client[job["db"]].get_collection(job["collection"], codec_options=raw)
-            if mode == "drop":
-                collection.drop()
-
-            def flush(batch: list) -> None:
-                if not batch:
-                    return
-                if mode == "merge":
-                    result = collection.bulk_write(
-                        [ReplaceOne({"_id": doc["_id"]}, doc, upsert=True) for doc in batch],
-                        ordered=False,
-                    )
-                    outcome["inserted"] += result.upserted_count
-                    outcome["replaced"] += result.matched_count
-                    return
-                try:
-                    collection.insert_many(batch, ordered=False)
-                    # Not len(result.inserted_ids): pymongo leaves that empty
-                    # for RawBSONDocument inserts.
-                    outcome["inserted"] += len(batch)
-                except BulkWriteError as exc:
-                    details = exc.details or {}
-                    outcome["inserted"] += int(details.get("nInserted") or 0)
-                    for error in details.get("writeErrors", []):
-                        if error.get("code") == 11000 and mode == "skip":
-                            outcome["skipped"] += 1
-                        elif len(outcome["errors"]) < 5:
-                            outcome["errors"].append(error.get("errmsg", "write error"))
-
-            def report() -> None:
-                done = outcome["inserted"] + outcome["replaced"] + outcome["skipped"]
-                progress.advance(key, stream.count, note=f"{done:,} documents")
-
+            writer = _Writer(client[job["db"]], job["collection"], mode, capabilities, raw)
             try:
                 with archive.open(job["member"]) as member:
                     stream = _Counting(member)
                     batch: list = []
-                    for doc in bson.decode_file_iter(stream, codec_options=raw):
+                    for doc in bson.decode_file_iter(stream, codec_options=codec):
                         batch.append(doc)
                         if len(batch) >= _BATCH:
-                            flush(batch)
+                            writer.flush(batch)
                             batch = []
-                            report()
+                            progress.advance(key, stream.count, note=f"{writer.documents:,} documents")
                             progress.check()
-                    flush(batch)
-                    report()
+                    writer.flush(batch)
+                    progress.advance(key, stream.count, note=f"{writer.documents:,} documents")
+            except Cancelled:
+                results.append(writer.outcome)
+                progress.partial({"collections": results, "skipped": skipped})
+                raise
             except Exception as exc:  # noqa: BLE001 - reported per collection
-                from services.jobs import Cancelled
-
-                if isinstance(exc, Cancelled):
-                    results.append(outcome)
-                    progress.partial({"collections": results, "skipped": skipped})
-                    raise
-                outcome["errors"].append(str(exc)[:300])
+                writer._error(str(exc)[:300])
 
             if job["metadata"] in members:
                 try:
                     metadata = json_util.loads(archive.read(job["metadata"]))
-                    target = client[job["db"]][job["collection"]]
-                    for index in metadata.get("indexes", []):
-                        if index.get("name") == "_id_":
-                            continue
-                        options = {
-                            key: value for key, value in index.items()
-                            if key not in ("key", "v", "ns", "background")
-                        }
-                        target.create_index(list(dict(index["key"]).items()), **options)
-                        outcome["indexes"] += 1
+                    writer.indexes(metadata.get("indexes", []))
                 except Exception as exc:  # noqa: BLE001
-                    outcome["errors"].append(f"indexes: {str(exc)[:300]}")
-            results.append(outcome)
-            parts = [f"{outcome['inserted']:,} inserted"]
-            if outcome["replaced"]:
-                parts.append(f"{outcome['replaced']:,} replaced")
-            if outcome["skipped"]:
-                parts.append(f"{outcome['skipped']:,} skipped")
-            if outcome["indexes"]:
-                parts.append(f"{outcome['indexes']} index(es)")
-            note = ", ".join(parts)
-            progress.finish(key, "failed" if outcome["errors"] and not outcome["inserted"] else "done", note)
-            progress.log(f"{'⚠' if outcome['errors'] else '✓'} {key}: {note}")
-            for error in outcome["errors"]:
-                progress.log(f"    {error}")
-            progress.partial({"collections": results, "skipped": skipped})
+                    writer._error(f"indexes: {str(exc)[:300]}")
+            _finish(progress, key, writer, results, {"skipped": skipped})
     return {"collections": results, "skipped": skipped}
+
+
+def copy_collections(source, target, db: str, coll: str, target_db: str, target_coll: str,
+                     mode: str, progress=None, source_capabilities=None,
+                     target_capabilities=None) -> dict:
+    """
+    Copy a database (``coll`` empty) or one collection from one connection to
+    another, any backends (phase 39, step 5): the documents in batches, then
+    the indexes. Raw BSON end to end when both sides have it, decoded
+    otherwise. ``target_coll`` renames a single collection on the way.
+    """
+    from bson.codec_options import CodecOptions
+    from bson.raw_bson import RawBSONDocument
+
+    from services.jobs import Cancelled, Progress
+
+    source_capabilities = (_all_capabilities() if source_capabilities is None
+                           else source_capabilities)
+    target_capabilities = (_all_capabilities() if target_capabilities is None
+                           else target_capabilities)
+    progress = progress or Progress()
+    raw = "raw_bson" in source_capabilities and "raw_bson" in target_capabilities
+    codec = CodecOptions(document_class=RawBSONDocument) if raw else decoded_codec()
+    specs = dump_specs(source[db], coll, source_capabilities)
+    plan = [(spec["name"], (target_coll or spec["name"]) if coll else spec["name"]) for spec in specs]
+    for name, new_name in plan:
+        progress.item(f"{db}.{name}", f"{db}.{name} → {target_db}.{new_name}",
+                      _estimate(source[db][name]), "documents")
+    progress.log(f"Copying {len(plan)} collection(s) to {target_db}, mode {mode}")
+    results: list[dict] = []
+    for name, new_name in plan:
+        key = f"{db}.{name}"
+        writer = _Writer(target[target_db], new_name, mode, target_capabilities, raw)
+        read = 0
+        try:
+            batch: list = []
+            for doc in source[db].get_collection(name, codec_options=codec).find():
+                batch.append(doc)
+                read += 1
+                if len(batch) >= _BATCH:
+                    writer.flush(batch)
+                    batch = []
+                    progress.advance(key, read)
+                    progress.check()
+            writer.flush(batch)
+            progress.advance(key, read)
+        except Cancelled:
+            results.append(writer.outcome)
+            progress.partial({"collections": results})
+            raise
+        except Exception as exc:  # noqa: BLE001 - reported per collection
+            writer._error(str(exc)[:300])
+        try:
+            writer.indexes([_index_metadata(index) for index in source[db][name].list_indexes()])
+        except Exception as exc:  # noqa: BLE001
+            writer._error(f"indexes: {str(exc)[:300]}")
+        _finish(progress, key, writer, results, {})
+    return {"collections": results}

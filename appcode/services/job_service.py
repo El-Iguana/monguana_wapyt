@@ -1,5 +1,6 @@
 """
-BFF: start a dump, and follow or cancel any job (ROADMAP phase 36).
+BFF: start a dump or a copy, and follow or cancel any job (ROADMAP phases 36
+and 39).
 
 The registry lives in ``services.jobs`` (a plain module); this file is
 re-executed per call and keeps nothing. A restore starts from its upload
@@ -34,18 +35,71 @@ class JobService:
             return {"ok": False, "error": "Connection not found"}
         except BackendUnavailable as exc:
             return {"ok": False, "error": str(exc)}
-        if "dump_restore" not in backend.capabilities:
-            return {"ok": False, "error": f"{backend.label} connections cannot be dumped"}
         path = jobs.new_file(".zip")
         title = f"Dump {db}.{coll}" if coll else f"Dump {db}"
         try:
             job = jobs.start(
                 self._user_id, "dump", title,
-                lambda progress: write_dump(client, db, coll, path, progress),
+                lambda progress: write_dump(client, db, coll, path, progress,
+                                            frozenset(backend.capabilities)),
                 path=path, filename=f"{_safe_filename(db, coll)}.zip",
             )
         except jobs.JobLimit as exc:
             path.unlink(missing_ok=True)
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "job": job.id}
+
+    def start_copy(
+        self, conn_id: int, db: str, target_conn: int, target_db: str,
+        coll: str = "", target_coll: str = "", mode: str = "skip",
+    ) -> dict:
+        """
+        Copy a database (no ``coll``) or a collection to any of the caller's
+        connections, whatever their backends (phase 39, step 5).
+        """
+        if not self._user_id:
+            return {"ok": False, "error": "Not authenticated"}
+        from services import jobs
+        from services.backends import BackendUnavailable
+        from services.mongo_pool import ProfileNotFound, pool
+        from services.transfer import RESTORE_MODES, SYSTEM_DATABASES, copy_collections
+
+        db, coll = (db or "").strip(), (coll or "").strip()
+        target_db = (target_db or "").strip() or db
+        target_coll = (target_coll or "").strip() if coll else ""
+        if mode not in RESTORE_MODES:
+            return {"ok": False, "error": "mode must be skip, drop or merge"}
+        if not db:
+            return {"ok": False, "error": "Choose what to copy"}
+        if target_db in SYSTEM_DATABASES:
+            return {"ok": False, "error": f"{target_db} is a system database"}
+        import re
+
+        if re.search(r'[/\\. "$*<>:|?\x00]', target_db) or len(target_db.encode()) > 63:
+            return {"ok": False, "error": "That is not a valid database name"}
+        if target_coll and (target_coll.startswith("system.") or "$" in target_coll
+                            or "\x00" in target_coll):
+            return {"ok": False, "error": "That is not a valid collection name"}
+        same_place = int(conn_id) == int(target_conn) and db == target_db and (
+            not coll or (target_coll or coll) == coll)
+        if same_place:
+            return {"ok": False, "error": "That copies onto itself; choose another target"}
+        try:
+            source, source_backend = pool.open(self._user_id, int(conn_id))
+            target, target_backend = pool.open(self._user_id, int(target_conn))
+        except ProfileNotFound:
+            return {"ok": False, "error": "Connection not found"}
+        except BackendUnavailable as exc:
+            return {"ok": False, "error": str(exc)}
+        title = f"Copy {db}.{coll}" if coll else f"Copy {db}"
+        try:
+            job = jobs.start(
+                self._user_id, "copy", title,
+                lambda progress: copy_collections(
+                    source, target, db, coll, target_db, target_coll, mode, progress,
+                    frozenset(source_backend.capabilities), frozenset(target_backend.capabilities)),
+            )
+        except jobs.JobLimit as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "job": job.id}
 

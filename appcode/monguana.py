@@ -334,8 +334,7 @@ class Monguana(MainWindow):
                     TreeAction("connect", "Connect / refresh", "mdi-connection", kinds=server),
                     TreeAction("new_db", "Create database…", "mdi-database-plus", kinds=server,
                                requires=["create_collection"]),
-                    TreeAction("restore", "Restore dump…", "mdi-backup-restore", kinds=server,
-                               requires=["dump_restore"]),
+                    TreeAction("restore", "Restore dump…", "mdi-backup-restore", kinds=server),
                     TreeAction("disconnect", "Disconnect", "mdi-lan-disconnect", kinds=server),
                     TreeAction(separator=True),
                     TreeAction("edit_conn", "Edit connection…", "mdi-pencil", kinds=server),
@@ -347,10 +346,11 @@ class Monguana(MainWindow):
                     TreeAction("refresh_db", "Refresh", "mdi-refresh", kinds=database),
                     TreeAction("new_coll", "Create collection…", "mdi-table-plus", kinds=database,
                                requires=["create_collection"]),
-                    TreeAction("dump_db", "Dump database", "mdi-download", kinds=database,
-                               requires=["dump_restore"]),
+                    TreeAction("dump_db", "Dump database", "mdi-download", kinds=database),
+                    TreeAction("copy_db", "Copy database to…", "mdi-content-duplicate",
+                               kinds=database),
                     TreeAction("restore_db", "Restore into this database…",
-                               "mdi-backup-restore", kinds=database, requires=["dump_restore"]),
+                               "mdi-backup-restore", kinds=database),
                     TreeAction("drop_db", "Drop database…", "mdi-delete-forever",
                                kinds=database, danger=True),
                     TreeAction("open", "Open in new tab", "mdi-tab-plus", kinds=either),
@@ -358,8 +358,9 @@ class Monguana(MainWindow):
                     TreeAction("stats", "Statistics", "mdi-chart-box-outline", kinds=collection),
                     TreeAction("rename", "Rename…", "mdi-rename", kinds=collection,
                                requires=["rename"]),
-                    TreeAction("dump_coll", "Dump collection", "mdi-download", kinds=collection,
-                               requires=["dump_restore"]),
+                    TreeAction("dump_coll", "Dump collection", "mdi-download", kinds=collection),
+                    TreeAction("copy_coll", "Copy collection to…", "mdi-content-duplicate",
+                               kinds=collection),
                     TreeAction("drop_coll", "Drop…", "mdi-delete-forever",
                                kinds=either, danger=True),
                 ],
@@ -829,6 +830,8 @@ class Monguana(MainWindow):
             "stats": lambda: self._stats_dialog(conn_id, db, coll),
             "rename": lambda: self._rename_collection(conn_id, db, coll),
             "drop_coll": lambda: self._drop_collection(conn_id, db, coll),
+            "copy_db": lambda: self._copy_dialog(conn_id, db, ""),
+            "copy_coll": lambda: self._copy_dialog(conn_id, db, coll),
         }
         if action == "open":
             self._open_view(conn_id, db, coll, data.get("kind", "collection"))
@@ -3397,6 +3400,63 @@ class Monguana(MainWindow):
             payload = {}
         return int(xhr.status), payload if isinstance(payload, dict) else {}
 
+    async def _copy_dialog(self, conn_id: int, db: str, coll: str) -> None:
+        """Copy a database or collection to any connection, any backend (phase 39)."""
+        what = f"{db}.{coll}" if coll else db
+        modal = ModalWindow(ModalConfig(
+            dispose_on_close=True, title=f"Copy {what}", width=560, height=520 if coll else 460,
+        ))
+        host = js.document.createElement("div")
+        host.className = "mg-dialog"
+        host.innerHTML = (
+            '<div class="mg-hint">Copies the documents, then the indexes, into any of your '
+            "connections — another server, or a tinymongo store. It runs as a job.</div>"
+            '<div class="mg-dialog-form"></div>'
+        )
+        modal.body.appendChild(host)
+        conns = sorted(self._conns, key=lambda conn: (conn["id"] != conn_id, conn["name"].lower()))
+        fields = [
+            FieldConfig(id="target", label="Copy into", type="select", value=str(conn_id),
+                        options=[SelectOption(str(conn["id"]), conn["name"]
+                                              + (" (this one)" if conn["id"] == conn_id else ""))
+                                 for conn in conns]),
+            FieldConfig(id="target_db", label="Database", value=db, required=True),
+        ]
+        if coll:
+            fields.append(FieldConfig(id="target_coll", label="Collection", value=coll,
+                                      required=True))
+        fields.append(FieldConfig(
+            id="mode", label="When a document already exists", type="select", value="skip",
+            options=[
+                SelectOption("skip", "Skip it (keep what is there)"),
+                SelectOption("merge", "Replace it (upsert by _id)"),
+                SelectOption("drop", "Drop each target collection first"),
+            ],
+        ))
+        form = Form(FormConfig(submit_text="Copy", cancel_text="Cancel", fields=fields),
+                    container=host.querySelector(".mg-dialog-form"))
+        form.on_cancel(lambda _payload: modal.close())
+
+        async def _copy(values: dict) -> None:
+            target = int(values.get("target") or conn_id)
+            form.set_busy(True)
+            try:
+                result = await JobService().start_copy_async(
+                    conn_id, db, target, values.get("target_db") or "",
+                    coll=coll, target_coll=values.get("target_coll") or "",
+                    mode=values.get("mode") or "skip",
+                )
+            finally:
+                form.set_busy(False)
+            if not result.get("ok"):
+                form.set_error(None, result.get("error", "Could not start the copy"))
+                return
+            modal.close()
+            await self._job_console(result["job"], f"Copy {what}", "copy", target)
+
+        form.on_submit(lambda values: _spawn(_copy(values), "copy"))
+        modal.show()
+
     async def _start_dump(self, conn_id: int, db: str, coll: str) -> None:
         result = await JobService().start_dump_async(conn_id, db, coll)
         if not result.get("ok"):
@@ -3512,7 +3572,8 @@ class Monguana(MainWindow):
             self._toast(f"{title}: done, downloading.")
         elif status["state"] == "done":
             self._toast(f"{title}: done.")
-        if kind == "restore":
+        if kind in ("restore", "copy"):
+            # For a copy, conn_id is the target.
             await self._refresh_server(conn_id)
 
     # ------------------------------------------------------------------

@@ -255,7 +255,7 @@ skip themselves on Windows.
 **Later, not this phase:** a desktop window instead of a browser tab; the
 same launcher for IguanaXterm, which shares the service wiring.
 
-## Phase 39: backend plugins, tinymongo first — in progress (2026-09-30)
+## Phase 39: backend plugins, tinymongo first — done (2026-09-30)
 
 **Step 1 done** (2026-09-30): `services/backends/` (registry + the built-in
 `mongodb` backend), `connections.backend`/`options` with their migration, the
@@ -291,6 +291,18 @@ Container root `/tinymongo` (volume `monguana-tinymongo`), Windows
 `tests/test_tinymongo.py` runs every service against both engines without a
 MongoDB. Found on the way: tinymongo refuses descending index keys, update
 pipelines and collations (shown as its own errors).
+
+**Step 5 done** (2026-09-30): dump, restore and **copy** across backends.
+`dump_restore` became two capabilities, `raw_bson` (RawBSONDocument end to
+end) and `bulk_write` (Merge's batched upserts); without them documents are
+decoded/encoded and Merge replaces one at a time, so Dump and Restore are on
+for every backend. `transfer._Writer` writes for restore and copy, and creates
+indexes one by one so a refused one does not stop the rest.
+`JobService.start_copy` and the **Copy database / collection to…** dialog copy
+between any two of a user's connections as a job. Tests: dump/restore round
+trips and a copy job on all four tinymongo engines; live, the decoded paths
+through the no-capability backend and MongoDB → tinymongo → MongoDB with the
+BSON types checked (a small Int64 comes back Int32: tinymongo returns `int`).
 
 **Step 4 done** (2026-09-30): third-party backends through the
 `monguana.backends` entry-point group, loaded once with the built-ins under
@@ -405,5 +417,4 @@ Not gaps — ideas the rewrite could take further:
 
 38 (native Windows install) is in progress.
 
-39 (backend plugins, tinymongo first) is in progress: steps 1–4 are done;
-step 5 (dump, restore and copy across backends) is next.
+39 (backend plugins, tinymongo first) is done.

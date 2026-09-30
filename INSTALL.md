@@ -284,7 +284,17 @@ To open files from this computer in the container, replace the volume line in
 
 What tinymongo cannot do is not offered for its connections: statistics
 show a document count only, and there is no Explain, Rename, capped or TTL
-index, hidden index, dump or restore. Indexes are ascending only.
+index, or hidden index. Indexes are ascending only.
+
+**Dump, Restore and Copy to…** work on tinymongo too. A dump is a normal
+mongodump-layout ZIP, so it restores into MongoDB (here, or with
+`mongorestore`) and the other way round. **Copy database / collection to…**
+(right-click) copies straight between any two of your connections — a MongoDB
+server into a tinymongo store, or back — documents first, then the indexes,
+as a job you can follow and cancel. The target may refuse some indexes (a
+descending one, on tinymongo); the rest still copy, and the console says
+which. One type does not survive a trip through tinymongo: a small
+`NumberLong` comes back as a 32-bit integer.
 
 **DuckDB and Parquet engines** are offered once their packages are installed
 (large native wheels, so not by default). In the container, set this in

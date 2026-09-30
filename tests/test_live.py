@@ -500,11 +500,6 @@ def test_limited_refuses_what_it_cannot_do(env, limited):
     assert "hide" in refused(mongo.create_index(limited, LIMITED_DB, "items", "{n: 1}",
                                                 hidden=True))
     assert "hide" in refused(mongo.set_index_hidden(limited, LIMITED_DB, "items", "x", True))
-
-    from services.job_service import JobService
-
-    assert refused(JobService(env["user"]).start_dump(limited, LIMITED_DB)) == \
-        "Limited connections cannot be dumped"
     # Nothing of the above reached the server.
     names = [row["name"] for row in ok(mongo.collections(env["conn"], LIMITED_DB))["collections"]]
     assert names == ["items"]
@@ -526,3 +521,98 @@ def test_limited_index_changes_rebuild_instead_of_collmod(env, limited):
     names = [row["name"] for row in ok(mongo.indexes(limited, LIMITED_DB, "items"))["indexes"]]
     assert "n_1" in names
     ok(mongo.drop_index(limited, LIMITED_DB, "items", "n_1"))
+
+
+def test_limited_dump_and_restore_without_raw_bson_or_bulk_write(env, limited, tmp_path):
+    """Phase 39, step 5: the decoded paths, against the real server."""
+    from services.mongo_pool import pool
+    from services.transfer import restore_archive, write_dump
+
+    client = pool.client(1, limited)
+    path = tmp_path / "limited.zip"
+    summary = write_dump(client, LIMITED_DB, "", path, capabilities=frozenset())
+    assert summary["collections"][0]["documents"] == 3
+    target = f"{LIMITED_DB}_back"
+    try:
+        for mode, field, expected in (("skip", "inserted", 3), ("skip", "skipped", 3),
+                                      ("merge", "replaced", 3), ("drop", "inserted", 3)):
+            with open(path, "rb") as archive:
+                outcome = restore_archive(client, archive, mode, target,
+                                          capabilities=frozenset())["collections"][0]
+            assert outcome[field] == expected, (mode, outcome)
+        assert sorted(doc["_id"] for doc in client[target]["items"].find()) == [1, 2, 3]
+    finally:
+        client.drop_database(target)
+
+
+@pytest.fixture()
+def tiny(env, tmp_path, monkeypatch):
+    """A tinymongo store next to the real server, for copies both ways."""
+    from services import backends
+    from services.backends.tinymongo import TinyMongoBackend
+
+    monkeypatch.setenv("MONGUANA_TINYMONGO_ROOT", str(tmp_path))
+    backends.register(TinyMongoBackend())
+    saved = env["conns"].save(name="tiny", backend="tinymongo",
+                              options={"engine": "sqlite", "folder": ""})
+    assert saved["ok"], saved
+    yield saved["id"]
+    from services.mongo_pool import pool
+
+    pool.close(1, saved["id"])
+
+
+def test_copy_mongodb_to_tinymongo_and_back(env, tiny):
+    import time
+
+    from services import jobs
+    from services.job_service import JobService
+    from services.mongo_pool import pool
+
+    mongo, conn = env["mongo"], env["conn"]
+    source_db, back_db = f"{DB}_copysrc", f"{DB}_copyback"
+    ok(mongo.insert(conn, source_db, "things", """[
+        {_id: ObjectId("65a1b2c3d4e5f60718293a4b"), when: ISODate("2026-01-01T00:00:00Z"),
+         price: NumberDecimal("9.99"), key: UUID("12345678-1234-5678-1234-567812345678"),
+         big: NumberLong("9007199254740993"), small: NumberLong("5"),
+         nested: {list: [1, {x: "y"}]}},
+        {_id: 2, name: "plain"},
+    ]"""))
+    ok(mongo.create_index(conn, source_db, "things", "{name: 1}", name="name_1"))
+    service = JobService(env["user"])
+
+    def run(started: dict) -> dict:
+        ok(started)
+        for _ in range(200):
+            snapshot = jobs.get(started["job"], 1).snapshot(0)
+            if snapshot["state"] != "running":
+                return snapshot
+            time.sleep(0.05)
+        raise AssertionError("copy did not finish")
+
+    try:
+        assert run(service.start_copy(conn, source_db, tiny, "shop"))["state"] == "done"
+        there = pool.client(1, tiny)["shop"]["things"]
+        assert there.count_documents({}) == 2
+        assert "name_1" in {index["name"] for index in there.list_indexes()}
+
+        assert run(service.start_copy(tiny, "shop", conn, back_db))["state"] == "done"
+        client = pool.client(1, conn)
+        original = {doc["_id"]: doc for doc in client[source_db]["things"].find()}
+        returned = {doc["_id"]: doc for doc in client[back_db]["things"].find()}
+        assert returned == original
+        # Equal as numbers; the stored BSON types, which == does not compare.
+        # tinymongo hands Int64 back as int, so a small one returns as Int32:
+        # the one type a trip through tinymongo loses (INSTALL.md says so).
+        types = client[back_db]["things"].aggregate([
+            {"$match": {"_id": {"$ne": 2}}},
+            {"$project": {"_id": 0, **{field: {"$type": f"${field}"} for field in
+                                       ("big", "small", "price", "when", "key")}}},
+        ]).next()
+        assert types == {"big": "long", "small": "int", "price": "decimal",
+                         "when": "date", "key": "binData"}
+        assert "name_1" in {index["name"] for index in client[back_db]["things"].list_indexes()}
+    finally:
+        client = pool.client(1, conn)
+        client.drop_database(source_db)
+        client.drop_database(back_db)
