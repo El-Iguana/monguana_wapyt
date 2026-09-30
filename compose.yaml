@@ -16,6 +16,9 @@ services:
     build:
       context: .
       dockerfile: Containerfile
+      args:
+        # tinymongo engines and backend plugins; see .env.example.
+        EXTRA_PACKAGES: ${MONGUANA_EXTRA_PACKAGES:-}
     image: localhost/monguana:latest
     container_name: monguana
     hostname: monguana

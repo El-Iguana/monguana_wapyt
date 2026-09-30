@@ -20,9 +20,23 @@ from typing import Any, Optional
 
 ROOT_ENV = "MONGUANA_TINYMONGO_ROOT"
 
-# tinymongo's storage engines offered here, as (tinymongo name, label). SQLite
-# and JSON need no extras; duckdb/parquet come later (phase 39, step 4).
-ENGINES = (("sqlite", "SQLite"), ("json", "JSON"))
+# tinymongo's storage engines, as (tinymongo name, label, modules it needs).
+# SQLite and JSON need nothing more; DuckDB and Parquet are offered only when
+# their packages are installed (Monguana's `duckdb` / `parquet` extras).
+_ALL_ENGINES = (
+    ("sqlite", "SQLite", ()),
+    ("json", "JSON", ()),
+    ("duckdb", "DuckDB", ("duckdb",)),
+    ("parquet", "Parquet (a folder per database)", ("duckdb", "pyarrow")),
+)
+
+
+def engines() -> list[tuple[str, str]]:
+    """The engines this install can open, as (name, label)."""
+    from importlib.util import find_spec
+
+    return [(name, label) for name, label, needs in _ALL_ENGINES
+            if all(find_spec(module) is not None for module in needs)]
 
 
 def configured_root() -> Optional[Path]:
@@ -81,13 +95,13 @@ class TinyMongoBackend:
         """The connection editor's fields for this backend (see ConnectionService.backends)."""
         return [
             {"id": "engine", "label": "Storage engine", "type": "select",
-             "options": [{"value": value, "label": label} for value, label in ENGINES],
-             "value": ENGINES[0][0]},
+             "options": [{"value": value, "label": label} for value, label in engines()],
+             "value": "sqlite"},
             {"id": "folder", "label": "Store folder", "value": "",
              "placeholder": "(the root itself)",
              # Not the root's absolute path: every signed-in user sees this.
              "help": "Relative to the tinymongo root your administrator set; "
-                     "it must exist. Each database is one file in it."},
+                     "it must exist. Each database is one file (Parquet: one folder) in it."},
         ]
 
     def public_options(self, options: dict) -> dict:
@@ -97,8 +111,9 @@ class TinyMongoBackend:
     def validate(self, profile: dict) -> dict:
         options = profile.get("options") or {}
         errors: dict = {}
-        if options.get("engine") not in dict(ENGINES):
-            errors["engine"] = "Choose " + " or ".join(label for _, label in ENGINES)
+        offered = dict(engines())
+        if options.get("engine") not in offered:
+            errors["engine"] = "Choose " + ", ".join(offered.values())
         try:
             resolve_folder(options.get("folder", ""))
         except OutsideRoot as exc:

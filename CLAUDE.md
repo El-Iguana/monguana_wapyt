@@ -57,6 +57,8 @@ tools/codemirror/           # its recipe: pinned package.json, entry.js, build.s
 tests/                      # unit tests; test_live.py needs a MongoDB
 tests/smoke/                # ui_smoke.py (Playwright) + seed_shop.py
 tools/windows/              # native Windows install: launcher, build.py, Inno Setup (phase 38)
+docs/BACKEND_PLUGINS.md     # writing a backend plugin (phase 39)
+examples/monguana-sandbox-backend/  # a working backend plugin; tests/test_plugins.py installs it
 ```
 
 ## Running
@@ -71,7 +73,7 @@ scripts/podman-run.sh      # dev container "monguana": host network, local wapyt
 
 Installing (users): **INSTALL.md** — `compose.yaml` on any OS with Docker or
 Podman, `compose.host-network.yaml` on Linux. `manage.py` is the admin CLI
-(`health`, `probe HOST PORT`, `users`, `reset-password`).
+(`health`, `probe HOST PORT`, `users`, `reset-password`, `backends`).
 
 ### How the image is built (2026-09-26)
 
@@ -336,7 +338,21 @@ folder to the root on save *and* on every open. Traps, all measured:
 - The editor's backend fields are `opt_<id>` in the form; `_save` maps the
   service's errors (keyed by the backend's ids) back onto them.
 
-`tests/test_tinymongo.py` needs no MongoDB and runs on every push.
+`tests/test_tinymongo.py` needs no MongoDB and runs on every push. It covers
+DuckDB and Parquet too when they are installed (`uv sync --extra duckdb
+--extra parquet`); in the image, the `EXTRA_PACKAGES` build argument
+(`MONGUANA_EXTRA_PACKAGES` in `.env`) installs them, and plugins.
+
+### Backend plugins (phase 39, step 4)
+
+Entry-point group `monguana.backends`; guide in docs/BACKEND_PLUGINS.md,
+working example in `examples/monguana-sandbox-backend`. `_load_builtins`
+loads built-ins then plugins **once, under `_load_lock`** (an RLock plus a
+`_loading` flag, so a plugin importing the registry mid-load does not
+deadlock). Rejected plugins land in `backends.load_errors`;
+`python manage.py backends` prints them and exits 1. Tests that need a fresh
+registry must reset `_registry`, `sources`, `load_errors` and
+`_builtins_loaded` together (see `tests/test_plugins.py`).
 
 ### Plain routes for bytes — `transfer.py`, under `/mg`
 

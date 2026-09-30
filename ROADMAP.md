@@ -292,6 +292,19 @@ Container root `/tinymongo` (volume `monguana-tinymongo`), Windows
 MongoDB. Found on the way: tinymongo refuses descending index keys, update
 pipelines and collations (shown as its own errors).
 
+**Step 4 done** (2026-09-30): third-party backends through the
+`monguana.backends` entry-point group, loaded once with the built-ins under
+one lock. A plugin that fails to load, lacks part of the protocol
+(`backends.REQUIRED`), claims a built-in or taken name, or declares an unknown
+capability is left out and listed by `python manage.py backends` (exit 1).
+`examples/monguana-sandbox-backend` is a working plugin (in-memory tinymongo)
+and `tests/test_plugins.py` installs it as a real distribution and drives it
+through the services; docs/BACKEND_PLUGINS.md is the guide. tinymongo's
+DuckDB and Parquet engines appear when installed: Monguana extras `duckdb`
+and `parquet`, and in the container the `EXTRA_PACKAGES` build argument
+(`MONGUANA_EXTRA_PACKAGES` in `.env`), which also installs plugins. The
+tinymongo suite passes unchanged on all four engines.
+
 Let a connection point at something other than a MongoDB server, starting with
 **tinymongo** (`../tinymongo`, PyPI `tinymongo`): a PyMongo-shaped library
 that stores databases in local files (SQLite, JSON, DuckDB, Parquet).
@@ -392,4 +405,5 @@ Not gaps — ideas the rewrite could take further:
 
 38 (native Windows install) is in progress.
 
-39 (backend plugins, tinymongo first) is in progress: steps 1–3 are done.
+39 (backend plugins, tinymongo first) is in progress: steps 1–4 are done;
+step 5 (dump, restore and copy across backends) is next.

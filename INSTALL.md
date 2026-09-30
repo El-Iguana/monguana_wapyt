@@ -286,6 +286,24 @@ What tinymongo cannot do is not offered for its connections: statistics
 show a document count only, and there is no Explain, Rename, capped or TTL
 index, hidden index, dump or restore. Indexes are ascending only.
 
+**DuckDB and Parquet engines** are offered once their packages are installed
+(large native wheels, so not by default). In the container, set this in
+`.env` and rebuild with `docker compose up -d --build`:
+
+```sh
+MONGUANA_EXTRA_PACKAGES=tinymongo[duckdb] tinymongo[parquet]
+```
+
+For a local run: `uv sync --extra duckdb --extra parquet`. The Windows
+installer has SQLite and JSON only.
+
+### Other backends (plugins)
+
+Packages can add further backends; `MONGUANA_EXTRA_PACKAGES` installs them in
+the container the same way. `python manage.py backends` lists what is
+installed and any plugin that failed to load. Writing one:
+[docs/BACKEND_PLUGINS.md](docs/BACKEND_PLUGINS.md).
+
 ---
 
 ## 6. Everyday tasks

@@ -4,13 +4,21 @@ engines. No MongoDB needed: every store is a temporary folder.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 
 import pytest
 
 pytest.importorskip("tinymongo")
 
-ENGINES = ("sqlite", "json")
+# DuckDB and Parquet only where installed: uv sync --extra duckdb --extra parquet
+ENGINES = [
+    pytest.param(name, marks=pytest.mark.skipif(
+        not all(importlib.util.find_spec(module) for module in needs),
+        reason=f"{name} needs {', '.join(needs)}"))
+    for name, needs in (("sqlite", ()), ("json", ()), ("duckdb", ("duckdb",)),
+                        ("parquet", ("duckdb", "pyarrow")))
+]
 
 
 @pytest.fixture()
