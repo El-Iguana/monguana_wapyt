@@ -255,6 +255,94 @@ skip themselves on Windows.
 **Later, not this phase:** a desktop window instead of a browser tab; the
 same launcher for IguanaXterm, which shares the service wiring.
 
+## Phase 39: backend plugins, tinymongo first — planned (2026-09-30)
+
+Let a connection point at something other than a MongoDB server, starting with
+**tinymongo** (`../tinymongo`, PyPI `tinymongo`): a PyMongo-shaped library
+that stores databases in local files (SQLite, JSON, DuckDB, Parquet).
+
+**Starting point.** tinymongo has **no wire-protocol server** yet (its roadmap
+§6–8, unbuilt), so Monguana cannot reach it over TCP. The plugin opens the
+store **in-process** in the Monguana server. Its `MongoClient` is close enough
+to PyMongo's that most of `MongoService` works unchanged. Monguana assumes
+MongoDB throughout today: `mongo_pool` always builds a `pymongo.MongoClient`,
+`connections` has no backend column, `_validate` accepts only `mongodb://`
+URIs, and several views use server features tinymongo lacks.
+
+**What tinymongo lacks that Monguana uses** (checked against tinymongo master,
+2026-09-30): `$collStats` (the header of every collection view), `$sample`,
+`explain`, `rename`, `create_collection` options (capped), `list_collections`
+(types and options), `collMod`, `bulk_write`, `maxTimeMS`, `hello`, and
+aggregation beyond `$match/$sort/$skip/$limit/$count/$project/$set/$unset/$group`
+(no `$lookup`, `$unwind`). `db.command` answers only `ping` and `buildInfo`.
+It reports what it supports through `client.capabilities()`.
+
+**Design:**
+
+1. **Backend protocol and registry** in a plain module, `services/backends/`
+   — not a BFF: BFF modules re-execute per call, and `test_bff_state.py`
+   forbids module-level state in them. A backend provides `name`, `label`,
+   its connection-editor fields (the editor is built from them), `validate`,
+   `open(profile)` → a PyMongo-shaped client, `test(profile)` → a status
+   line, and `capabilities`. The current code moves into the built-in
+   `mongodb` backend.
+2. **Storage:** `backend TEXT DEFAULT 'mongodb'` and `options TEXT` (JSON,
+   Fernet-encrypted when it holds secrets) on `connections`, added in
+   `_migrate`. Fix the hand-written column lists in `ConnectionService.save`
+   and `duplicate`. The pool fingerprint includes backend and options.
+3. **Capabilities.** MongoDB has them all, so nothing changes there. Without
+   one, `MongoService` falls back or refuses:
+
+   | Capability | Fallback |
+   |---|---|
+   | Collection stats | `count_documents` + `sizeOnDisk` from `list_databases` |
+   | `$sample` (builder, fields) | `find().limit(n)` |
+   | `list_collections` | plain names, type `collection` |
+   | Raw BSON reads | decode, then `bson.encode` |
+   | `maxTimeMS` | dropped |
+   | Explain, rename, capped, collMod, TTL/hidden indexes | hidden in the UI; the service refuses with a clear message |
+
+   The tree nodes carry the backend's capabilities, and the context menu,
+   index dialog and Explain button follow them. `TreeAction` filters by node
+   `kind` only, so wapyt probably needs a small capability filter.
+4. **tinymongo backend:**
+   - Editor fields: engine select and folder. **First release: `sqlite` and
+     `json`** (no extras needed). `duckdb`/`parquet` come later and only
+     appear when their extras are installed. `memory` (lost on restart) and
+     Postgres/MySQL (DSNs) are out.
+   - **Security:** the folder is a path on the server, so any Monguana user
+     could otherwise read or write any file the server can reach. It must
+     resolve inside one admin-set root, **`MONGUANA_TINYMONGO_ROOT`**; unset
+     means the backend is off. Containers mount a volume there; the Windows
+     install defaults it to `%LOCALAPPDATA%\Monguana\tinymongo`.
+   - **Test creates nothing:** tinymongo's constructor makes folders, so Test
+     checks the path exists before opening it.
+   - Unsupported stages raise `TinyMongoNotSupportedError`, shown as an
+     error; the stage cards can mark them.
+   - Database names come from the folder's files for the chosen engine: the
+     engine cannot be auto-detected.
+5. **Third-party plugins** through a `monguana.backends` entry-point group —
+   after tinymongo works, so the protocol is shaped by a real second backend.
+
+**Tests:** unit tests for the registry, validation and the root containment
+(`..`, symlinks); a tinymongo variant of `test_live.py` on SQLite in a temp
+folder, which needs no MongoDB and so runs in CI on every push; a smoke step
+that creates a tinymongo profile through the editor.
+
+**Work, in order:**
+
+1. Protocol, registry and schema migration; MongoDB moved into a backend.
+   No visible change: the existing tests stay green.
+2. Capabilities, the service fallbacks and the UI gating (plus the wapyt
+   `TreeAction` change if needed).
+3. The tinymongo backend on `sqlite` and `json`: root, editor fields, tests,
+   container volume and Windows bundle.
+4. Entry-point discovery for third-party backends; `duckdb`/`parquet`; docs
+   (INSTALL.md, CLAUDE.md).
+5. Dump, restore and copy across backends. Both already read and write the
+   mongodump layout in Python, so MongoDB → tinymongo and back comes almost
+   free.
+
 ## Beyond the original
 
 Not gaps — ideas the rewrite could take further:
@@ -268,3 +356,5 @@ Not gaps — ideas the rewrite could take further:
 31–37 are done: every gap from the original is closed.
 
 38 (native Windows install) is in progress.
+
+39 (backend plugins, tinymongo first) is planned; its work list is in order.
