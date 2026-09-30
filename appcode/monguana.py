@@ -664,10 +664,16 @@ class Monguana(MainWindow):
     def _server_item(self, conn: dict) -> TreeItem:
         conn_id = conn["id"]
         node = _node_id("c", conn_id)
-        where = (
-            "connection string" if conn.get("has_uri")
-            else f"{conn.get('host', '')}:{conn.get('port', '')}"
-        )
+        options = conn.get("options") or {}
+        is_mongo = (conn.get("backend") or "mongodb") == "mongodb"
+        if not is_mongo:
+            where = " · ".join(part for part in (
+                conn.get("backend_label", ""), options.get("engine", ""),
+                options.get("folder") or "(root)") if part)
+        elif conn.get("has_uri"):
+            where = "connection string"
+        else:
+            where = f"{conn.get('host', '')}:{conn.get('port', '')}"
         tooltip = f"{conn['name']}\n{where}" + (f"\n{conn['notes']}" if conn.get("notes") else "")
         if conn_id in self._dbs:
             children = [self._db_item(conn_id, row) for row in self._dbs[conn_id]]
@@ -677,7 +683,9 @@ class Monguana(MainWindow):
             children = [self._note_item(node, self._errors.get(node) or (
                 "Connecting…" if node in self._loading else "Expand to connect"))]
         return TreeItem(
-            id=node, label=conn["name"], icon="mdi-server", open_icon="mdi-server-network",
+            id=node, label=conn["name"],
+            icon="mdi-server" if is_mongo else "mdi-folder-table",
+            open_icon="mdi-server-network" if is_mongo else "mdi-folder-table-outline",
             tooltip=tooltip, items=children,
             data={"kind": "server", "conn": conn_id, "flags": self._caps(conn_id)},
         )
@@ -886,16 +894,34 @@ class Monguana(MainWindow):
     # Connection profiles
     # ------------------------------------------------------------------
 
-    async def _connection_editor(self, conn_id: int | None) -> None:
+    async def _connection_editor(self, conn_id: int | None, backend: str = "",
+                                 carry: dict | None = None) -> None:
+        """
+        New or edit. MongoDB has its own fields; another backend's come from
+        ``ConnectionService.backends`` (phase 39). Choosing another backend in
+        a new connection reopens the editor for it, keeping ``carry``.
+        """
         existing: dict = {}
         if conn_id:
             existing = await ConnectionService().get_async(conn_id)
             if not existing:
                 self._toast("Connection not found.")
                 return
+        existing = {**existing, **(carry or {})}
+        available = await ConnectionService().backends_async()
+        chosen = existing.get("backend") or backend or "mongodb"
+        spec = next((item for item in available if item["name"] == chosen), None)
+        if spec is None:
+            self._toast(f"The {chosen!r} backend is not installed.")
+            return
+        is_mongo = spec["fields"] is None
+        stored_options = existing.get("options") or {}
 
+        title = "Edit connection" if conn_id else "New connection"
+        if not is_mongo:
+            title += f" — {spec['label']}"
         modal = ModalWindow(ModalConfig(
-            dispose_on_close=True, title="Edit connection" if conn_id else "New connection", width=620, height=780,
+            dispose_on_close=True, title=title, width=620, height=780 if is_mongo else 640,
         ))
         host = js.document.createElement("div")
         host.className = "mg-dialog"
@@ -911,51 +937,89 @@ class Monguana(MainWindow):
 
         has_password = existing.get("has_password")
         has_uri = existing.get("has_uri")
+        head = [FieldConfig(id="name", label="Name", required=True,
+                            value=existing.get("name", ""), span=2)]
+        if not conn_id and len(available) > 1:
+            head.append(FieldConfig(
+                id="backend", label="Connects to", type="select", value=chosen, span=2,
+                options=[SelectOption(item["name"], item["label"]) for item in available],
+            ))
+        if is_mongo:
+            body = [
+                FieldConfig(id="host", label="Host",
+                            value=existing.get("host", "localhost" if not conn_id else "")),
+                FieldConfig(id="port", label="Port", type="number", min=1, max=65535,
+                            value=existing.get("port", 27017)),
+                FieldConfig(id="username", label="Username", autocomplete="off",
+                            value=existing.get("username", "")),
+                FieldConfig(id="password", label="Password", type="password",
+                            autocomplete="new-password",
+                            placeholder="•••••• (stored)" if has_password else "",
+                            help="Blank keeps the stored password." if has_password else None),
+                FieldConfig(id="auth_source", label="Auth database",
+                            value=existing.get("auth_source", "admin")),
+                FieldConfig(id="default_db", label="Default database",
+                            value=existing.get("default_db", ""),
+                            help="Shown when the user may not list databases."),
+                FieldConfig(id="tls", label="TLS", type="checkbox",
+                            value=bool(existing.get("tls"))),
+                FieldConfig(id="direct", label="Direct connection", type="checkbox",
+                            value=bool(existing.get("direct", True))),
+                FieldConfig(id="uri", label="Connection string", span=2,
+                            autocomplete="off",
+                            placeholder="•••••• (stored)" if has_uri
+                            else "mongodb+srv://user:pass@cluster.example.net/",
+                            help=("Stored. Blank keeps it; type a single space to clear it. "
+                                  if has_uri else "")
+                            + "When set, it replaces every field above."),
+            ]
+        else:
+            body = [
+                FieldConfig(
+                    id=f"opt_{field['id']}", label=field["label"],
+                    type=field.get("type", "text"), span=2,
+                    value=stored_options.get(field["id"], field.get("value", "")),
+                    placeholder=field.get("placeholder"), help=field.get("help"),
+                    options=[SelectOption(option["value"], option["label"])
+                             for option in field["options"]] if field.get("options") else None,
+                )
+                for field in spec["fields"]
+            ]
+        tail = [
+            FieldConfig(id="folder", label="Folder", value=existing.get("folder", ""),
+                        placeholder="(none)"),
+            FieldConfig(id="notes", label="Notes", value=existing.get("notes", "")),
+        ]
         form = Form(
             FormConfig(
                 columns=2,
                 submit_text="Save",
                 cancel_text="Cancel",
-                fields=[
-                    FieldConfig(id="name", label="Name", required=True,
-                                value=existing.get("name", ""), span=2),
-                    FieldConfig(id="host", label="Host",
-                                value=existing.get("host", "localhost" if not conn_id else "")),
-                    FieldConfig(id="port", label="Port", type="number", min=1, max=65535,
-                                value=existing.get("port", 27017)),
-                    FieldConfig(id="username", label="Username", autocomplete="off",
-                                value=existing.get("username", "")),
-                    FieldConfig(id="password", label="Password", type="password",
-                                autocomplete="new-password",
-                                placeholder="•••••• (stored)" if has_password else "",
-                                help="Blank keeps the stored password." if has_password else None),
-                    FieldConfig(id="auth_source", label="Auth database",
-                                value=existing.get("auth_source", "admin")),
-                    FieldConfig(id="default_db", label="Default database",
-                                value=existing.get("default_db", ""),
-                                help="Shown when the user may not list databases."),
-                    FieldConfig(id="tls", label="TLS", type="checkbox",
-                                value=bool(existing.get("tls"))),
-                    FieldConfig(id="direct", label="Direct connection", type="checkbox",
-                                value=bool(existing.get("direct", True))),
-                    FieldConfig(id="uri", label="Connection string", span=2,
-                                autocomplete="off",
-                                placeholder="•••••• (stored)" if has_uri
-                                else "mongodb+srv://user:pass@cluster.example.net/",
-                                help=("Stored. Blank keeps it; type a single space to clear it. "
-                                      if has_uri else "")
-                                + "When set, it replaces every field above."),
-                    FieldConfig(id="folder", label="Folder", value=existing.get("folder", ""),
-                                placeholder="(none)"),
-                    FieldConfig(id="notes", label="Notes", value=existing.get("notes", "")),
-                ],
+                fields=head + body + tail,
             ),
             container=host.querySelector(".mg-dialog-form"),
         )
         form.on_cancel(lambda _payload: modal.close())
 
+        def _on_change(payload: dict) -> None:
+            if payload.get("id") != "backend" or payload.get("value") in (None, chosen):
+                return
+            values = form.get_values()
+            keep = {key: values.get(key) or "" for key in ("name", "folder", "notes")}
+            modal.close()
+            _spawn(self._connection_editor(None, str(payload["value"]), keep), "connection editor")
+
+        form.on_change(_on_change)
+
         def _payload(values: dict) -> dict:
+            if not is_mongo:
+                return {
+                    "backend": chosen,
+                    "options": {field["id"]: values.get(f"opt_{field['id']}") or ""
+                                for field in spec["fields"]},
+                }
             payload = {
+                "backend": "mongodb",
                 "host": values.get("host") or "",
                 "port": int(values.get("port") or 27017),
                 "username": values.get("username") or "",
@@ -984,7 +1048,9 @@ class Monguana(MainWindow):
             payload = _payload(form.get_values())
             result = await ConnectionService().test_async(conn_id=conn_id, **payload)
             if result.get("ok"):
-                version = f"MongoDB {result['version']}" if result.get("version") else "Connected"
+                version = result.get("version") or "Connected"
+                if is_mongo and result.get("version"):
+                    version = f"MongoDB {version}"
                 result_el.textContent = f"✓ {version} · {result.get('ms', 0)} ms"
                 result_el.dataset.state = "ok"
             else:
@@ -1008,7 +1074,10 @@ class Monguana(MainWindow):
                 )
                 if not result.get("ok"):
                     if result.get("errors"):
-                        form.set_errors(result["errors"])
+                        # A backend names its own fields; the form prefixes them.
+                        own = set() if is_mongo else {field["id"] for field in spec["fields"]}
+                        form.set_errors({(f"opt_{key}" if key in own else key): text
+                                         for key, text in result["errors"].items()})
                     else:
                         form.set_error(None, result.get("error", "Could not save"))
                     return

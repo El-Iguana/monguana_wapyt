@@ -37,6 +37,9 @@ services:
       MONGUANA_ALLOWED_HOSTS: ${MONGUANA_ALLOWED_HOSTS:-}
     volumes:
       - monguana-data:/data
+      # tinymongo stores (INSTALL.md, "tinymongo stores"). To open files from
+      # this computer instead, replace with a folder, e.g. ./tinymongo:/tinymongo:z
+      - monguana-tinymongo:/tinymongo
     healthcheck:
       test: ["CMD", "python", "manage.py", "health"]
       interval: 30s
@@ -47,3 +50,5 @@ services:
 volumes:
   monguana-data:
     name: monguana-data
+  monguana-tinymongo:
+    name: monguana-tinymongo

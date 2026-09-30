@@ -17,7 +17,7 @@ from services.auth import current_user_id
 from services.db import encode_options, encrypt, fetch_connection, get_db
 
 _PUBLIC_COLUMNS = (
-    "id, name, backend, folder, host, port, username, auth_source, tls, direct, "
+    "id, name, backend, options, folder, host, port, username, auth_source, tls, direct, "
     "default_db, notes, created_at"
 )
 
@@ -63,6 +63,17 @@ class ConnectionService:
                 (int(conn_id), self._user_id),
             ).fetchone()
         return self._public(row, set()) if row else {}
+
+    def backends(self) -> list:
+        """What a new connection can point at, with each one's editor fields."""
+        if not self._user_id:
+            return []
+        from services import backends
+
+        return [
+            {"name": backend.name, "label": backend.label, "fields": backend.fields()}
+            for backend in backends.listing()
+        ]
 
     def folders(self) -> list:
         if not self._user_id:
@@ -285,16 +296,21 @@ class ConnectionService:
     @staticmethod
     def _public(row: Any, open_ids: set) -> dict:
         from services import backends
+        from services.db import decode_options
 
         data = dict(row)
-        # What the UI may offer for this profile (see backends.CAPABILITIES).
+        stored_options = decode_options(data.pop("options", "") or "")
+        # What the UI may offer for this profile (see backends.CAPABILITIES),
+        # and the backend's settings it may show again (never secrets).
         try:
             backend = backends.get(data.get("backend") or "")
             data["backend_label"] = backend.label
             data["capabilities"] = sorted(backend.capabilities)
+            data["options"] = backend.public_options(stored_options)
         except backends.BackendUnavailable:
             data["backend_label"] = data.get("backend") or ""
             data["capabilities"] = []
+            data["options"] = {}
         data["tls"] = bool(data.get("tls"))
         data["direct"] = bool(data.get("direct"))
         data["has_password"] = bool(data.pop("has_password", 0))

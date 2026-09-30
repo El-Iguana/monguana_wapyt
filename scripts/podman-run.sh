@@ -51,6 +51,7 @@ podman run -d \
   -e "PORT=$PORT" \
   -e "MONGUANA_CANONICAL_ORIGIN=http://127.0.0.1:$PORT" \
   -v "$VOLUME:/data:U" \
+  -v monguana-tinymongo:/tinymongo:U \
   "$IMAGE:latest" >/dev/null
 
 printf '==> waiting for startup'

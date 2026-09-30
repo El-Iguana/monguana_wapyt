@@ -42,6 +42,7 @@ appcode/                    # pytincture modules_path
     backends/               #   what a profile points at (phase 39) — plain, NOT BFFs
       __init__.py           #     registry: get / for_profile / register
       mongodb.py            #     the built-in MongoDB backend (client options, test)
+      tinymongo.py          #     tinymongo stores, confined to MONGUANA_TINYMONGO_ROOT
     connection_service.py   #   BFF: profiles, test, connect/disconnect
     mongo_service.py        #   BFF: databases, collections, documents, indexes…
     user_service.py         #   BFF: accounts (from IguanaXterm)
@@ -312,6 +313,30 @@ never a literal keyword; collMod changes become rebuilds) or refuses with
 `data["flags"]`, and `TreeAction(requires=[…])` (wapyt) hides entries.
 **A new server feature needs a capability** if another backend might lack it.
 `test_live.py` checks every fallback through a backend declaring none.
+
+### tinymongo (phase 39, step 3)
+
+In-process (tinymongo has no wire protocol), and **only when
+`MONGUANA_TINYMONGO_ROOT` is set**: container `/tinymongo` (volume
+`monguana-tinymongo`), Windows launcher `%LOCALAPPDATA%\Monguana\tinymongo`,
+unset for `python service.py`. `resolve_folder` confines a profile's relative
+folder to the root on save *and* on every open. Traps, all measured:
+
+- **Touching a database creates its file on the JSON engine** — even
+  `client.admin.command("ping")`. Test lists databases instead; never touch
+  `admin` for a tinymongo client.
+- No `create_collection`: collections appear on first insert. The backend's
+  `create_collection` hook inserts and deletes a placeholder; both engines
+  keep the empty collection.
+- `aggregate()` refuses `maxTimeMS` (`find`/`count_documents` accept it), so
+  no `time_limits`. Descending index keys, update pipelines and collations are
+  refused with tinymongo's own messages.
+- `get_collection(codec_options=RawBSONDocument)` silently returns plain
+  dicts, which is why dump/restore stay off until step 5.
+- The editor's backend fields are `opt_<id>` in the form; `_save` maps the
+  service's errors (keyed by the backend's ids) back onto them.
+
+`tests/test_tinymongo.py` needs no MongoDB and runs on every push.
 
 ### Plain routes for bytes — `transfer.py`, under `/mg`
 

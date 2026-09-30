@@ -74,20 +74,24 @@ COPY --from=wapyt-wheels /wheels/browser/wapyt-99.99.99-py3-none-any.whl appcode
 # SQLite, secret.key (encrypts stored MongoDB passwords) and session.key live
 # here. Keep it on a named volume: losing secret.key loses every stored
 # password.
-RUN mkdir -p /data
+RUN mkdir -p /data /tinymongo
 VOLUME /data
+
+# tinymongo stores (ROADMAP phase 39): connections may only open folders in
+# here. compose.yaml mounts a volume; INSTALL.md shows a folder instead.
 
 EXPOSE 8766
 
 # MONGUANA_BIND=0.0.0.0 inside the container is what makes a published port
 # work; publish it on the host as 127.0.0.1:8766 (see compose.yaml).
 ENV MONGUANA_DATA_DIR=/data \
+    MONGUANA_TINYMONGO_ROOT=/tinymongo \
     MONGUANA_BIND=0.0.0.0 \
     PYTHONUNBUFFERED=1 \
     PORT=8766
 
 # Never as root: the database holds every user's server credentials.
-RUN useradd --system --uid 10001 --home /app monguana && chown -R monguana /app /data
+RUN useradd --system --uid 10001 --home /app monguana && chown -R monguana /app /data /tinymongo
 USER monguana
 
 CMD ["python", "service.py"]

@@ -40,6 +40,9 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - monguana-data:/data
+      # tinymongo stores (INSTALL.md, "tinymongo stores"). To open files from
+      # this computer instead, replace with a folder, e.g. ./tinymongo:/tinymongo:z
+      - monguana-tinymongo:/tinymongo
     healthcheck:
       test: ["CMD", "python", "manage.py", "health"]
       interval: 30s
@@ -65,5 +68,7 @@ volumes:
   monguana-data:
     # Named explicitly so it is the same whatever folder this was cloned into.
     name: monguana-data
+  monguana-tinymongo:
+    name: monguana-tinymongo
   monguana-mongo:
     name: monguana-mongo

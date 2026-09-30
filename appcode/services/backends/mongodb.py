@@ -63,6 +63,13 @@ class MongoBackend:
 
         return frozenset(CAPABILITIES)
 
+    def fields(self) -> None:
+        """MongoDB keeps its own editor (host, credentials, URI, TLS)."""
+        return None
+
+    def public_options(self, options: dict) -> dict:
+        return {}
+
     def validate(self, profile: dict) -> dict:
         """The Form checks the same things in the browser; this is the copy that counts."""
         errors: dict = {}
