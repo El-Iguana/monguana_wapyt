@@ -24,6 +24,12 @@ class FakeBackend:
     label = "Fake"
     capabilities = frozenset({"rename"})
 
+    def fields(self) -> list:
+        return [{"id": "folder", "label": "Folder"}]
+
+    def public_options(self, options: dict) -> dict:
+        return {"folder": options.get("folder", "")}
+
     def validate(self, profile: dict) -> dict:
         folder = (profile.get("options") or {}).get("folder", "")
         return {} if folder else {"folder": "Folder is required"}
@@ -179,7 +185,9 @@ def test_list_duplicate_and_mongodb_default(conns, data):
     by_name = {row["name"]: row for row in conns.list()}
     assert by_name["server"]["backend"] == "mongodb"
     assert by_name["files"]["backend"] == "fake"
-    assert "options" not in by_name["files"]
+    # Only what the backend calls public reaches the browser.
+    assert by_name["files"]["options"] == {"folder": "shop"}
+    assert by_name["server"]["options"] == {}
     # What the UI may offer, per profile (phase 39, step 2).
     assert by_name["files"]["capabilities"] == ["rename"]
     assert by_name["files"]["backend_label"] == "Fake"

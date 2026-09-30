@@ -254,6 +254,38 @@ refused* from the container. Three ways out, pick one:
 3. **Run MongoDB in a container** next to Monguana: the bundled
    `--profile mongo`, or your own container connected to `monguana_default`.
 
+### tinymongo stores (no MongoDB server)
+
+[tinymongo](https://pypi.org/project/tinymongo/) keeps MongoDB-style
+databases in files: one SQLite or JSON file per database, in a folder.
+Monguana opens those files itself, so **New connection → Connects to:
+tinymongo** asks for a storage engine and a *store folder* instead of a host.
+
+The folder is on the machine Monguana runs on, so connections may only open
+folders inside one directory, the **tinymongo root**
+(`MONGUANA_TINYMONGO_ROOT`):
+
+| Install | tinymongo root |
+|---|---|
+| compose | `/tinymongo` in the container, on the `monguana-tinymongo` volume |
+| Windows installer | `%LOCALAPPDATA%\Monguana\tinymongo` |
+| `python service.py` | not set: tinymongo is off until you set it |
+
+A store folder is typed relative to the root, and must already exist; leave
+it blank for the root itself. `..`, absolute paths and symlinks out of the
+root are refused.
+
+To open files from this computer in the container, replace the volume line in
+`compose.yaml` with a folder (`:z` for SELinux, as in section 6):
+
+```yaml
+      - ./tinymongo:/tinymongo:z
+```
+
+What tinymongo cannot do is not offered for its connections: statistics
+show a document count only, and there is no Explain, Rename, capped or TTL
+index, hidden index, dump or restore. Indexes are ascending only.
+
 ---
 
 ## 6. Everyday tasks

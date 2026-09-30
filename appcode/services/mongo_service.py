@@ -202,7 +202,11 @@ class MongoService:
             self._require("create_collection", "create empty databases")
             if name in client.list_database_names():
                 raise _Refused(f"Database {name!r} already exists")
-            client[name].create_collection(first)
+            hook = getattr(self._backend, "create_collection", None)
+            if hook is not None:
+                hook(client[name], first)
+            else:
+                client[name].create_collection(first)
             return {"db": name, "collection": first}
 
         return self._guard(work)
@@ -235,7 +239,11 @@ class MongoService:
                 options = {"capped": True, "size": int(size)}
                 if int(max_docs or 0) > 0:
                     options["max"] = int(max_docs)
-            client[db].create_collection(coll, **options)
+            hook = getattr(self._backend, "create_collection", None)
+            if hook is not None:
+                hook(client[db], coll)
+            else:
+                client[db].create_collection(coll, **options)
             return {"db": db, "collection": coll}
 
         return self._guard(work)

@@ -29,6 +29,15 @@ A backend is any object with:
     The names from :data:`CAPABILITIES` this backend supports. MongoDB has
     them all. Without one, ``MongoService`` falls back to something simpler
     or refuses, and the UI hides what would be refused.
+``fields() -> list | None``
+    The connection editor's fields, as dicts (id, label, type, options,
+    value, placeholder, help); ``None`` for MongoDB's own editor. Their values
+    are saved as ``options``.
+``public_options(options) -> dict``
+    What of ``options`` the editor may show again. Never secrets.
+``create_collection(database, name)`` (optional)
+    How to make an empty collection where ``database.create_collection``
+    does not exist.
 """
 from __future__ import annotations
 
@@ -74,10 +83,14 @@ def _load_builtins() -> None:
     global _builtins_loaded
     if _builtins_loaded:
         return
+    from services.backends import tinymongo
     from services.backends.mongodb import MongoBackend
 
     with _lock:
         _registry.setdefault(MongoBackend.name, MongoBackend())
+        # Only with MONGUANA_TINYMONGO_ROOT set (and tinymongo installed).
+        if tinymongo.available():
+            _registry.setdefault(tinymongo.TinyMongoBackend.name, tinymongo.TinyMongoBackend())
         _builtins_loaded = True
 
 
@@ -95,6 +108,14 @@ def names() -> list[str]:
     _load_builtins()
     with _lock:
         return sorted(_registry)
+
+
+def listing() -> list[Any]:
+    """Every backend, MongoDB first."""
+    _load_builtins()
+    with _lock:
+        found = list(_registry.values())
+    return sorted(found, key=lambda backend: (backend.name != DEFAULT, backend.label.lower()))
 
 
 def for_profile(profile: dict) -> Any:

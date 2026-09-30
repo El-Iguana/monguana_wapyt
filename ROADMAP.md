@@ -276,6 +276,21 @@ against MongoDB through a backend declaring none; a browser check compared
 that profile's menus and dialogs with a full MongoDB one. **Needs wapyt's
 `requires`**: bump `WAPYT_REF` in the Containerfile once that is merged.
 
+**Step 3 done** (2026-09-30): `services/backends/tinymongo.py`, registered only
+when `MONGUANA_TINYMONGO_ROOT` is set. Profiles store an engine (`sqlite`,
+`json`) and a folder relative to that root, re-resolved and checked on every
+use (`..`, absolute paths, symlinks out). Capabilities: `authorized_listing`
+and `create_collection` (a `create_collection(database, name)` hook inserts
+and deletes a placeholder, since tinymongo creates collections on first
+insert). Test lists databases instead of pinging `admin`, which on the JSON
+engine creates `admin.json`. The editor gets **Connects to** and builds the
+fields of a backend other than MongoDB from `ConnectionService.backends()`.
+Container root `/tinymongo` (volume `monguana-tinymongo`), Windows
+`%LOCALAPPDATA%\Monguana\tinymongo`; `tinymongo>=1.3.1` is a dependency.
+`tests/test_tinymongo.py` runs every service against both engines without a
+MongoDB. Found on the way: tinymongo refuses descending index keys, update
+pipelines and collations (shown as its own errors).
+
 Let a connection point at something other than a MongoDB server, starting with
 **tinymongo** (`../tinymongo`, PyPI `tinymongo`): a PyMongo-shaped library
 that stores databases in local files (SQLite, JSON, DuckDB, Parquet).
@@ -376,4 +391,4 @@ Not gaps — ideas the rewrite could take further:
 
 38 (native Windows install) is in progress.
 
-39 (backend plugins, tinymongo first) is in progress: steps 1–2 are done.
+39 (backend plugins, tinymongo first) is in progress: steps 1–3 are done.

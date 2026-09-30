@@ -175,8 +175,12 @@ def start_server(port: int) -> subprocess.Popen:
         except OSError:
             pass
     env = dict(os.environ)
+    # tinymongo stores (ROADMAP phase 39): on unless the person chose a root.
+    tinymongo_root = os.environ.get("MONGUANA_TINYMONGO_ROOT", "").strip() or str(DATA / "tinymongo")
+    Path(tinymongo_root).mkdir(parents=True, exist_ok=True)
     env.update({
         "MONGUANA_DATA_DIR": str(DATA),
+        "MONGUANA_TINYMONGO_ROOT": tinymongo_root,
         "MONGUANA_BIND": "127.0.0.1",
         "PORT": str(port),
         "MONGUANA_CANONICAL_ORIGIN": f"http://127.0.0.1:{port}",
