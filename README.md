@@ -9,6 +9,8 @@ that runs in your browser and stays under your control. It also opens
 databases in SQLite, JSON, DuckDB or Parquet files, no server needed — and any
 backend a plugin adds.
 
+![Monguana: a MongoDB server and a tinymongo store in the sidebar, and a filtered, sorted collection in a tab](docs/images/monguana.png)
+
 **📖 The [wiki](https://github.com/El-Iguana/monguana_wapyt/wiki) is the user
 guide**: installing, connections, querying, indexes, dump and copy, tinymongo,
 plugins, administration and troubleshooting.
