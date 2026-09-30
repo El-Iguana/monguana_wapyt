@@ -33,7 +33,11 @@ tar -C "$WAPYT" --exclude=.git --exclude=.venv --exclude=__pycache__ \
     --exclude=build --exclude=dist --exclude='*.whl' -cf - . | tar -C "$CONTEXT" -xf -
 
 echo "==> building $IMAGE:$VERSION (wapyt from $WAPYT)"
-podman build --build-context "wapyt-src=$CONTEXT" \
+# Extra packages (tinymongo engines, backend plugins), as compose passes them:
+# from the environment, or else from .env.
+EXTRA="${MONGUANA_EXTRA_PACKAGES:-$(sed -n 's/^MONGUANA_EXTRA_PACKAGES=//p' .env | tail -1)}"
+[ -n "$EXTRA" ] && echo "==> with extra packages: $EXTRA"
+podman build --build-context "wapyt-src=$CONTEXT" --build-arg "EXTRA_PACKAGES=$EXTRA" \
   -t "$IMAGE:$VERSION" -t "$IMAGE:latest" -f Containerfile .
 
 echo "==> restarting $NAME"

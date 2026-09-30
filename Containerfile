@@ -64,6 +64,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libffi-dev 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional packages, space-separated: tinymongo's engines
+# ("tinymongo[duckdb]", "tinymongo[parquet]") and backend plugins (ROADMAP
+# phase 39; INSTALL.md, "tinymongo stores"). compose passes
+# MONGUANA_EXTRA_PACKAGES from .env.
+ARG EXTRA_PACKAGES=""
+RUN if [ -n "$EXTRA_PACKAGES" ]; then pip install --no-cache-dir $EXTRA_PACKAGES; fi
+
 COPY --from=wapyt-wheels /wheels/server/ /tmp/wapyt/
 RUN pip install --no-cache-dir /tmp/wapyt/wapyt-*.whl && rm -rf /tmp/wapyt
 

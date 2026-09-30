@@ -5,6 +5,7 @@ Monguana administration from the command line.
     python manage.py health                  # exit 0 when the app answers
     python manage.py probe host.docker.internal 27017   # can the app reach it?
     python manage.py users                   # list accounts
+    python manage.py backends                # what connections can point at
     python manage.py reset-password admin    # prompts for the new password
     python manage.py reset-password alice --create   # …or makes an admin
 
@@ -137,6 +138,23 @@ def reset_password(username: str, create: bool, from_stdin: bool) -> int:
     return 0
 
 
+def backends_cmd() -> int:
+    """Registered backends, where each came from, and plugins left out (exit 1)."""
+    from services import backends
+
+    for backend in backends.listing():
+        caps = ", ".join(sorted(backend.capabilities)) or "(none)"
+        print(f"{backend.name:<16} {backend.label:<16} {backends.sources.get(backend.name, '?')}")
+        print(f"{'':<16} capabilities: {caps}")
+    if "tinymongo" not in backends.names():
+        from services.backends import tinymongo
+
+        print(f"tinymongo        off: set {tinymongo.ROOT_ENV} to a folder to turn it on")
+    for problem in backends.load_errors:
+        print(f"left out: {problem}")
+    return 1 if backends.load_errors else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
     parser = argparse.ArgumentParser(prog="manage.py", description=__doc__.split("\n\n")[0])
@@ -146,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     probe_cmd.add_argument("host")
     probe_cmd.add_argument("port", type=int)
     commands.add_parser("users", help="list accounts")
+    commands.add_parser("backends", help="list backends, including plugins and load errors")
     reset = commands.add_parser("reset-password", help="set a user's password")
     reset.add_argument("username")
     reset.add_argument("--create", action="store_true", help="create an administrator if missing")
@@ -157,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         return probe(args.host, args.port)
     if args.command == "users":
         return users()
+    if args.command == "backends":
+        return backends_cmd()
     return reset_password(args.username, args.create, args.password_stdin)
 
 
