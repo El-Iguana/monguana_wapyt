@@ -1,7 +1,7 @@
 # Monguana
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.2.1-green.svg)]()
+[![Version](https://img.shields.io/badge/version-2.3.0-green.svg)]()
 
 A self-hosted, browser-based MongoDB manager: a clean alternative to Compass
 that runs in your browser and stays under your control. It also opens
@@ -12,8 +12,9 @@ backend a plugin adds.
 ![Monguana: a MongoDB server and a tinymongo store in the sidebar, and a filtered, sorted collection in a tab](docs/images/monguana.png)
 
 **📖 The [wiki](https://github.com/El-Iguana/monguana_wapyt/wiki) is the user
-guide**: installing, connections, querying, indexes, dump and copy, tinymongo,
-plugins, administration and troubleshooting.
+guide**: installing, connections, querying, indexes, dump and copy, the
+dashboard and query profiler, tinymongo, plugins, administration and
+troubleshooting.
 
 Version 2 is a rewrite of the original Monguana (FastAPI, Motor and vanilla
 JavaScript) onto [pytincture](https://github.com/pytincture/pytincture) and the
@@ -106,6 +107,8 @@ seconds while the tab is in front. Below, every database's size, documents,
 indexes and profiler state, and the operations running right now, longest
 first — right-click one to kill it.
 
+![The dashboard: server tiles and throughput per second with sparklines](docs/images/dashboard.png)
+
 **Query profiler.** Turn MongoDB's profiler off, on for slow operations
 (with the threshold and sample rate), or on for everything — per database,
 from its menu, its own tab, or the dashboard. See what it recorded grouped by
@@ -113,7 +116,9 @@ query shape (how often, how slow, documents examined against returned, which
 plan — collection scans flagged) or one operation at a time, filtered by
 collection, type and duration. A **profile filter** — a query on the
 profiler's own fields, with examples and completions — can replace the slow
-threshold to decide what gets recorded. A recorded find or aggregate reopens in a
+threshold to decide what gets recorded.
+
+![The query profiler, grouped by query shape, with collection scans flagged](docs/images/profiler.png) A recorded find or aggregate reopens in a
 collection tab with one click, ready for Explain or an index.
 
 **Accounts.** Multiple users with their own connection profiles, an admin
