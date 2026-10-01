@@ -814,6 +814,26 @@ class MongoService:
 
         return self._guard(work)
 
+    def kill_op(self, conn_id: int, opid: str) -> dict:
+        """
+        ``killOp`` on one operation from the dashboard's list. MongoDB checks
+        the ``killop`` privilege (or that the operation is the caller's own);
+        an operation that already finished is not an error there, so the
+        list is read again to say whether it is gone.
+        """
+        def work() -> dict:
+            text = str(opid).strip()
+            if not text:
+                raise _Refused("No operation given")
+            # mongod opids are numbers; a mongos one is "shard:number".
+            op: Any = int(text) if text.lstrip("-").isdigit() else text
+            client = self._client(conn_id)
+            self._require("server_status", "kill operations")
+            client.admin.command("killOp", op=op)
+            return {"opid": text}
+
+        return self._guard(work)
+
     def database_stats(self, conn_id: int) -> dict:
         """
         One row per database: ``dbStats`` and the profiler level where the
@@ -1372,6 +1392,11 @@ def _current_ops(client) -> list:
         if isinstance(stages, list) and stages and isinstance(stages[0], dict) \
                 and "$currentOp" in stages[0]:
             continue  # this very call
+        if "topologyVersion" in command and any(
+                key in command for key in ("hello", "isMaster", "ismaster")):
+            continue  # a driver's monitor, long-polling for topology changes
+        if op.get("op") == "none" and not op.get("client"):
+            continue  # the server's own threads (JournalFlusher, Checkpointer…)
         micros = _int(op.get("microsecs_running"))
         rows.append({
             "opid": str(op.get("opid", "")),

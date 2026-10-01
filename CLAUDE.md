@@ -184,7 +184,8 @@ The smoke test logs in, creates a profile through the editor (and its Test
 button), then filters, sorts, pages, switches views, edits, runs an
 updateMany through its preview, aggregates, uses Fields, checks the per-kind
 context menus, exports CSV, round-trips a dump through Restore, and opens the
-dashboard and the query profiler (on, a recorded query reopened, off, cleared).
+dashboard (kills a slow `$where` it starts itself, through pymongo) and the
+query profiler (on, a recorded query reopened, off, cleared).
 It expects an admin whose password is not flagged for change (the reminder
 dialog blocks it): `manage.py reset-password admin` first on a fresh data
 dir. Its About step expects the release check on. It fails
@@ -491,7 +492,15 @@ Traps, all measured on 7.0:
 - **`system.profile` can only be dropped while profiling is off**:
   `profiler_clear` switches it off, drops, and restores the level and settings.
 - `$currentOp` lists itself; `_current_ops` drops the entry whose pipeline
-  starts with `$currentOp`. `serverStatus` needs `clusterMonitor` and
+  starts with `$currentOp`. It also drops **every driver's monitor** (an
+  awaitable `hello` with `topologyVersion`, which looks like a 10 s command
+  per client — a kill test once killed that instead of the query) and the
+  server's own threads (`op: "none"`, no client: JournalFlusher, Checkpointer).
+- **Kill** (`kill_op`, the running-operations table's menu, confirmed first)
+  sends `killOp`; opids are ints on a mongod, `"shard:n"` strings on a mongos.
+  MongoDB answers ok even for an op that already ended, so the page re-reads
+  the list a second later. The op stops at its next interrupt check; its
+  client gets code 11601. `serverStatus` needs `clusterMonitor` and
   `$currentOp` with `allUsers` needs `inprog`: each half fails on its own
   and the page says which.
 - `find()` takes `max_time_ms`, not `maxTimeMS`: `_time_limit(ms,
@@ -663,9 +672,8 @@ Every gap from the original is closed (ROADMAP phases 31–37). ROADMAP.md
 lists what the rewrite still does not do: a live progress bar for export. Phase 38 plans a native
 Windows installer (no Docker, no HTTPS, browser only).
 Phase 39 (done) added backends: tinymongo stores and plugins, with dump,
-restore and copy between any of them. The dashboard has no Kill for a
-running operation yet, and the profiler shows a server profile filter but
-does not edit one.
+restore and copy between any of them. The profiler shows a server profile
+filter but does not edit one.
 
 ## Conventions
 

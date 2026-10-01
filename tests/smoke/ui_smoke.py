@@ -39,6 +39,32 @@ def shot(page, name: str) -> None:
     page.screenshot(path=str(HERE / f"{name}.png"))
 
 
+def _start_slow_query():
+    """
+    A ~14 s $where on shop.orders from a client of our own, for the
+    dashboard to list and kill. Returns an Event set when it ends.
+    """
+    import threading
+
+    from pymongo import MongoClient
+
+    client = MongoClient(MONGO["host"], int(MONGO["port"]), username=MONGO["username"],
+                         password=MONGO["password"], appname="smoke-slow")
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            list(client.shop.orders.find({"$where": "sleep(100) || true"}))
+        except Exception:  # noqa: BLE001 - killed, which is the point
+            pass
+        finally:
+            client.close()
+            done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return done
+
+
 def step(label: str) -> None:
     print(f"--> {label}", flush=True)
 
@@ -549,6 +575,17 @@ def main() -> int:
         # The rates need two samples, one poll apart.
         expect(dash.locator("svg.mg-spark").first).to_be_visible(timeout=15000)
         shot(page, "17-dashboard")
+
+        step("dashboard: kill a running operation")
+        slow_done = _start_slow_query()
+        slow_row = dash.locator("[id$='-ops'] tr[data-row-id]:has-text('sleep(')")
+        expect(slow_row).to_be_visible(timeout=15000)
+        shot(page, "17b-running-operation")
+        slow_row.click(button="right")
+        page.locator(".wapyt-datatable-menu:not([hidden]) >> text=Kill operation…").click()
+        slow_done.wait(timeout=10)
+        assert slow_done.is_set(), "the killed query was still running"
+        expect(slow_row).to_have_count(0, timeout=10000)
 
         step("query profiler: on from the dashboard, records, reopens, off and cleared")
         shop_stats.click(button="right")
