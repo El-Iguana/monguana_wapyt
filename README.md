@@ -111,7 +111,9 @@ first — right-click one to kill it.
 from its menu, its own tab, or the dashboard. See what it recorded grouped by
 query shape (how often, how slow, documents examined against returned, which
 plan — collection scans flagged) or one operation at a time, filtered by
-collection, type and duration. A recorded find or aggregate reopens in a
+collection, type and duration. A **profile filter** — a query on the
+profiler's own fields, with examples and completions — can replace the slow
+threshold to decide what gets recorded. A recorded find or aggregate reopens in a
 collection tab with one click, ready for Explain or an index.
 
 **Accounts.** Multiple users with their own connection profiles, an admin

@@ -918,6 +918,29 @@ class MongoService:
 
         return self._guard(work)
 
+    def set_profile_filter(self, conn_id: int, db: str, filter: str = "") -> dict:
+        """
+        The database's profile filter: a query over the fields of a profiler
+        entry (``op``, ``millis``, ``ns``, ``docsExamined``…). While one is
+        set it decides what level 1 records — and what the server log calls
+        slow — instead of ``slowms`` and ``sampleRate``; level 2 still records
+        everything. Blank text removes it. The level is left as it is.
+        """
+        def work() -> dict:
+            from services import mql
+
+            _check_db_name(db)
+            if db == "local":
+                raise _Refused("The local database cannot be profiled")
+            query = mql.parse_object(filter, "profile filter")
+            mql.check_query(query)
+            client = self._client(conn_id)
+            self._require("profiler", "profile queries")
+            client[db].command("profile", -1, filter=query or "unset")
+            return _profile_settings(client[db])
+
+        return self._guard(work)
+
     def profiler_entries(self, conn_id: int, db: str, limit: int = 100, min_ms: int = 0,
                          op: str = "", coll: str = "") -> dict:
         """The newest ``system.profile`` entries first, filtered."""

@@ -121,6 +121,26 @@ _RATE_TILES = (
 )
 
 _PROFILE_LEVELS = {0: "Off", 1: "Slow operations", 2: "Everything"}
+# What a profile filter can test: a profiler entry's fields, for completions.
+_PROFILE_FIELDS = (
+    ("op", "String"), ("ns", "String"), ("millis", "Int"), ("planSummary", "String"),
+    ("docsExamined", "Int"), ("keysExamined", "Int"), ("nreturned", "Int"),
+    ("nModified", "Int"), ("ndeleted", "Int"), ("ninserted", "Int"), ("nMatched", "Int"),
+    ("responseLength", "Int"), ("numYield", "Int"), ("hasSortStage", "Boolean"),
+    ("usedDisk", "Boolean"), ("appName", "String"), ("client", "String"), ("user", "String"),
+    ("errCode", "Int"), ("queryHash", "String"), ("planCacheShapeHash", "String"),
+    ("command", "Object"), ("command.find", "String"), ("command.aggregate", "String"),
+    ("command.filter", "Object"), ("ts", "Date"),
+)
+# The profile filter dialog's starting points.
+_PROFILE_FILTER_EXAMPLES = (
+    ("Slower than 50 ms", "{millis: {$gte: 50}}"),
+    ("Collection scans", '{planSummary: "COLLSCAN"}'),
+    ("Reads only", '{op: {$in: ["query", "getmore"]}}'),
+    ("Read 1,000+ documents", "{docsExamined: {$gte: 1000}}"),
+    ("Sorted in memory", "{hasSortStage: true}"),
+    ("One app", '{appName: "my-service"}'),
+)
 # system.profile's "op" values (mongo_service.PROFILE_OPS).
 _PROFILE_OPS = ("query", "getmore", "insert", "update", "remove", "command")
 
@@ -3997,6 +4017,8 @@ class Monguana(MainWindow):
             _spawn(self._profiler_set(tid, dash["settings"].get("level", 0)), "profiler settings")
         elif action == "clear":
             _spawn(self._profiler_clear(tid), "profiler clear")
+        elif action == "pfilter":
+            _spawn(self._profile_filter_dialog(tid), "profile filter")
         elif action == "show":
             dash["show"] = str(button.getAttribute("data-show"))
             for item in js.document.querySelectorAll(f'.mg-dash[data-tab="{tid}"] [data-mg="show"]'):
@@ -4439,6 +4461,9 @@ class Monguana(MainWindow):
       sample <input class="mg-input mg-num" type="number" min="0.01" max="1" step="0.05" id="{tid}-rate"></label>
     <button type="button" class="mg-btn" data-mg="apply" title="Apply the threshold and sample rate">
       <span class="mdi mdi-check"></span><span>Apply</span></button>
+    <button type="button" class="mg-btn" data-mg="pfilter" aria-pressed="false"
+      title="Decide what Slow only records with a query on the profiler's fields">
+      <span class="mdi mdi-filter-cog-outline"></span><span>Filter…</span></button>
     <span class="mg-bar-spacer"></span>
     <button type="button" class="mg-btn" data-mg="clear" title="Delete everything recorded so far">
       <span class="mdi mdi-delete-sweep-outline"></span><span>Clear</span></button>
@@ -4539,15 +4564,134 @@ class Monguana(MainWindow):
         for button in js.document.querySelectorAll(f'.mg-dash[data-tab="{tid}"] [data-mg="level"]'):
             button.setAttribute("aria-pressed",
                                 "true" if button.getAttribute("data-level") == str(level) else "false")
-        _el(f"{tid}-slowms").value = str(settings.get("slowms", 100))
-        _el(f"{tid}-rate").value = str(settings.get("sample_rate", 1.0))
+        filtered = bool(settings.get("filter"))
+        root = js.document.querySelector(f'.mg-dash[data-tab="{tid}"]')
+        slow = root.querySelector('[data-mg="level"][data-level="1"]')
+        slow.textContent = "Filtered" if filtered else "Slow only"
+        slow.title = ("Record the operations the profile filter matches" if filtered
+                      else "Record operations slower than the threshold")
+        # A filter replaces the threshold and the sample rate.
+        for element_id, value in ((f"{tid}-slowms", settings.get("slowms", 100)),
+                                  (f"{tid}-rate", settings.get("sample_rate", 1.0))):
+            box = _el(element_id)
+            box.value = str(value)
+            box.disabled = filtered
+            box.title = "Not used while the profile filter is set" if filtered else ""
+        root.querySelector('[data-mg="apply"]').disabled = filtered
+        button = root.querySelector('[data-mg="pfilter"]')
+        button.setAttribute("aria-pressed", "true" if filtered else "false")
+        button.title = (f"Profile filter: {compact(settings['filter'], 200)}" if filtered
+                        else "Decide what Slow only records with a query on the profiler's fields")
         state = _el(f"{tid}-pstate")
         if state:
             state.textContent = f"{_profile_sentence(settings)} · {settings.get('entries', 0):,} recorded"
             state.dataset.on = "true" if level else "false"
-        if settings.get("filter"):
-            self._dash_status(tid, "The server also has a profile filter, which decides what is "
-                                   f"recorded: {compact(settings['filter'], 300)}", "info")
+
+    async def _profile_filter_dialog(self, tid: str) -> None:
+        """Edit the database's profile filter in the code editor."""
+        dash = self._dashes.get(tid)
+        if dash is None:
+            return
+        current = dash["settings"].get("filter")
+        text = to_shell(current) if current else "{\n  \n}"
+        examples = "".join(
+            f'<button type="button" class="mg-btn mg-chip" data-example="{_esc(body)}">{_esc(label)}</button>'
+            for label, body in _PROFILE_FILTER_EXAMPLES)
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"Profile filter — {dash['db']}",
+                                        width=760, height=600))
+        modal.body.innerHTML = (
+            '<div class="mg-editor">'
+            '<div class="mg-editor-hint">A query on the fields of a profiler entry — <code>op</code>, '
+            "<code>millis</code>, <code>ns</code>, <code>planSummary</code>, <code>docsExamined</code>, "
+            "<code>appName</code>… While it is set, <b>Filtered</b> (level 1) records what it matches "
+            "instead of what is slower than the threshold, and the server log uses it too. "
+            "<b>All</b> still records everything. MongoDB keeps it in its own form, so it may read "
+            "back differently.</div>"
+            f'<div class="mg-chips"><span class="mg-bar-label">Examples</span>{examples}</div>'
+            '<textarea class="mg-code mg-tabbable mg-editor-text" spellcheck="false"'
+            ' aria-label="Profile filter"></textarea>'
+            '<div class="mg-editor-error" hidden></div>'
+            '<div class="mg-editor-actions">'
+            '<span class="mg-editor-keys">Ctrl+S saves</span>'
+            + ('<button type="button" class="mg-btn mg-danger" data-editor="remove">'
+               '<span class="mdi mdi-filter-remove-outline"></span><span>Remove filter</span></button>'
+               if current else "")
+            + '<button type="button" class="mg-btn" data-editor="cancel">Cancel</button>'
+            '<button type="button" class="mg-btn mg-primary" data-editor="save">'
+            '<span class="mdi mdi-content-save"></span><span>Save</span></button>'
+            "</div></div>"
+        )
+        area = modal.body.querySelector(".mg-editor-text")
+        error = modal.body.querySelector(".mg-editor-error")
+        area.value = text
+        mounted: dict = {}
+
+        def _close() -> None:
+            if mounted:
+                mounted["editor"].destroy()
+                mounted.clear()
+            modal.close()
+
+        async def _save(remove: bool = False) -> None:
+            body = "" if remove else str(area.value)
+            result = await MongoService().set_profile_filter_async(dash["conn"], dash["db"], body)
+            if not result.get("ok"):
+                error.hidden = False
+                error.textContent = result.get("error", "Could not set the filter")
+                return
+            _close()
+            self._toast(f"{dash['db']}: profile filter {'set' if result.get('filter') else 'removed'}.")
+            self._profiler_settings(tid, result)
+
+        def _on_click(event) -> None:
+            target = event.target
+            example = target.closest("[data-example]") if hasattr(target, "closest") else None
+            if example:
+                value = str(example.getAttribute("data-example"))
+                area.value = value
+                if mounted:
+                    mounted["editor"].setValue(value, len(value))
+                    mounted["editor"].focus()
+                return
+            which = target.closest("[data-editor]") if hasattr(target, "closest") else None
+            if not which:
+                return
+            action = str(which.getAttribute("data-editor"))
+            if action == "cancel":
+                _close()
+            elif action == "remove":
+                _spawn(_save(remove=True), "profile filter remove")
+            else:
+                _spawn(_save(), "profile filter save")
+
+        def _on_key(event) -> None:
+            if event.defaultPrevented:
+                return
+            if str(event.key).lower() == "s" and (event.ctrlKey or event.metaKey):
+                event.preventDefault()
+                _spawn(_save(), "profile filter save")
+
+        for event_name, handler in (("click", _on_click), ("keydown", _on_key)):
+            proxy = create_proxy(handler)
+            self._proxies.append(proxy)
+            modal.body.addEventListener(event_name, proxy)
+        modal.show()
+        caret = 4 if not current else len(text)
+        if await self._ensure_editor() and area.isConnected:
+            mounted.update(self._mount_editor(
+                area, role="pfilter", multiline=True, fill=True, height="100%",
+                on_save=lambda: _spawn(_save(), "profile filter save"),
+                on_run=lambda: _spawn(_save(), "profile filter save"),
+                fields=to_js([{"path": path, "types": types} for path, types in _PROFILE_FIELDS],
+                             dict_converter=js.Object.fromEntries),
+            ))
+            mounted["editor"].setValue(text, caret)
+            mounted["editor"].focus()
+            modal.body.querySelector(".mg-editor-keys").textContent = (
+                "Ctrl+S or Ctrl+Enter saves · Ctrl+Space completes fields")
+        else:
+            area.focus()
+            area.selectionStart = area.selectionEnd = caret
 
     async def _profiler_set(self, tid: str, level: int) -> None:
         dash = self._dashes.get(tid)
@@ -4793,8 +4937,11 @@ def _ago_label(ms) -> str:
 
 def _profile_sentence(settings: dict) -> str:
     level = settings.get("level", 0)
+    filtered = bool(settings.get("filter"))
     if not level:
-        return "Profiling is off"
+        return "Profiling is off" + (" (a filter is set)" if filtered else "")
+    if level == 1 and filtered:
+        return "Recording operations that match the filter"
     rate = settings.get("sample_rate", 1.0)
     sampled = f", sampling {rate:.0%}" if rate < 1 else ""
     if level == 1:
@@ -5134,6 +5281,10 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .mg-prof-settings{background:var(--mg-panel);}
 .mg-prof-settings .mg-seg{margin-right:4px;}
 .mg-head-stats[data-on="true"]{color:#fbbf24;}
+.mg-chips{display:flex;flex-wrap:wrap;align-items:center;gap:5px;flex:0 0 auto;}
+.mg-chips .mg-bar-label{margin-left:0;}
+.mg-chip{padding:3px 9px;border-radius:999px;font-size:12px;}
+.mg-editor-hint code{color:var(--mg-muted);}
 .mg-prof-command{flex:1 1 auto;min-height:100px;margin:0;}
 .mg-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 28px;flex:0 0 auto;}
 .mg-facts div{display:flex;justify-content:space-between;gap:12px;min-width:0;

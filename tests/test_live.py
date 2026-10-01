@@ -502,6 +502,7 @@ def test_limited_refuses_what_it_cannot_do(env, limited):
     assert "profile" in refused(mongo.set_profiler(limited, LIMITED_DB, 2))
     assert "profile" in refused(mongo.profiler_entries(limited, LIMITED_DB))
     assert "kill" in refused(mongo.kill_op(limited, "1"))
+    assert "profile" in refused(mongo.set_profile_filter(limited, LIMITED_DB, "{op: 'query'}"))
     assert "empty collections" in refused(mongo.create_collection(limited, LIMITED_DB, "x"))
     assert "empty databases" in refused(mongo.create_database(limited, f"{LIMITED_DB}2", "x"))
     assert "TTL" in refused(mongo.create_index(limited, LIMITED_DB, "items", "{n: 1}",
@@ -737,3 +738,30 @@ def test_kill_op_interrupts_a_running_query(env):
         worker.join(timeout=30)
         other.close()
     assert not mongo.kill_op(conn, "")["ok"]
+
+
+def test_the_profile_filter_is_set_used_and_removed(env):
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.insert(conn, DB, "filtered", "[{_id: 1, n: 1}, {_id: 2, n: 2}]"))
+    before = ok(mongo.profiler_status(conn, DB))
+    try:
+        # Shell syntax, outer braces optional; the level is not touched.
+        settings = ok(mongo.set_profile_filter(conn, DB, "op: 'query', ns: /filtered$/"))
+        assert settings["level"] == before["level"] and settings["filter"]
+        ok(mongo.set_profiler(conn, DB, 1))
+        ok(mongo.find(conn, DB, "filtered", "{n: 1}"))
+        ok(mongo.count(conn, DB, "filtered", "{n: 2}"))  # a command: not recorded
+        ops = {entry["op"] for entry in ok(mongo.profiler_entries(conn, DB, 50))["entries"]}
+        assert ops == {"query"}
+
+        refused = mongo.set_profile_filter(conn, DB, "{$where: 'true'}")
+        assert not refused["ok"] and "$where" in refused["error"]
+        assert not mongo.set_profile_filter(conn, DB, "{op: ")["ok"]
+        assert not mongo.set_profile_filter(conn, DB, "{millis: {$bogus: 1}}")["ok"]
+        assert not mongo.set_profile_filter(conn, "local", "{op: 'query'}")["ok"]
+
+        assert ok(mongo.set_profile_filter(conn, DB, "  "))["filter"] is None
+    finally:
+        mongo.set_profile_filter(conn, DB, "")
+        ok(mongo.set_profiler(conn, DB, before["level"]))
+        ok(mongo.profiler_clear(conn, DB))

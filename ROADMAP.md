@@ -499,8 +499,7 @@ Not gaps — ideas the rewrite could take further:
 - Progress for exports, which stream but show no bar.
 - ~~A server dashboard and the query profiler~~ — done 2026-10-01. See
   CLAUDE.md, *Dashboard and query profiler*. Killing a running operation
-  from the dashboard followed the same day. Not done yet: a profile *filter*
-  editor (the server's `filter` option is shown when set, not edited).
+  from the dashboard followed the same day, and then a profile filter editor.
 
 ## Order
 

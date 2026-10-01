@@ -185,7 +185,8 @@ button), then filters, sorts, pages, switches views, edits, runs an
 updateMany through its preview, aggregates, uses Fields, checks the per-kind
 context menus, exports CSV, round-trips a dump through Restore, and opens the
 dashboard (kills a slow `$where` it starts itself, through pymongo) and the
-query profiler (on, a recorded query reopened, off, cleared).
+query profiler (on, a recorded query reopened, a profile filter set from an
+example and removed, off, cleared).
 It expects an admin whose password is not flagged for change (the reminder
 dialog blocks it): `manage.py reset-password admin` first on a fresh data
 dir. Its About step expects the release check on. It fails
@@ -506,6 +507,16 @@ Traps, all measured on 7.0:
 - `find()` takes `max_time_ms`, not `maxTimeMS`: `_time_limit(ms,
   "max_time_ms")` there.
 - The local database cannot be profiled; refused before the server is asked.
+- **The profile filter** (`set_profile_filter`, the profiler's **Filter…**
+  dialog) is **per database**, set with `profile: -1` so the level stays,
+  removed with `filter: "unset"` (blank text here). While set, it replaces
+  `slowms`/`sampleRate` for level 1 *and* the slow-query log; level 2 still
+  records everything. The tab relabels Slow only as **Filtered** and disables
+  the threshold, sample and Apply. MongoDB **stores it normalized**
+  (`{op: "query"}` reads back as `{$and: [{op: {$eq: "query"}}]}`), so the
+  dialog shows that form. It is parsed by `mql` (shell syntax, braces
+  optional) and `check_query`d; MongoDB refuses `$where` there anyway.
+  Completions come from `_PROFILE_FIELDS` (a profiler entry's fields).
 
 ### Index CRUD (added 2026-09-25)
 
@@ -672,8 +683,7 @@ Every gap from the original is closed (ROADMAP phases 31–37). ROADMAP.md
 lists what the rewrite still does not do: a live progress bar for export. Phase 38 plans a native
 Windows installer (no Docker, no HTTPS, browser only).
 Phase 39 (done) added backends: tinymongo stores and plugins, with dump,
-restore and copy between any of them. The profiler shows a server profile
-filter but does not edit one.
+restore and copy between any of them.
 
 ## Conventions
 
