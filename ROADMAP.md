@@ -405,6 +405,85 @@ that creates a tinymongo profile through the editor.
    mongodump layout in Python, so MongoDB → tinymongo and back comes almost
    free.
 
+## Phase 40: native macOS install, browser only — planned (2026-10-01)
+
+A `.dmg` with a `Monguana.app` that runs Monguana on a Mac **without Docker and
+without HTTPS**, the macOS counterpart of phase 38. Docker Desktop or Podman
+(INSTALL.md) stays the answer meanwhile.
+
+**What carries over from phase 38:**
+
+- **The launcher** (`tools/windows/launcher.py`) is already cross-platform and
+  tested on Linux. It keeps one instance, uses port 8766 or the next free one
+  on 127.0.0.1, starts the server, opens the browser, and handles `--stop`,
+  `--status` and `--check`.
+- **The bundle approach:** a bundled Python with the app as plain files, no
+  PyInstaller, for the same reason as on Windows (pytincture serves appcode's
+  source to the browser).
+- **`pytincture_compat`'s Windows patch is not needed:** macOS supports
+  `dir_fd` for `os.open`. The service-worker patch applies as everywhere.
+- **No HTTPS needed**, as on Windows: a literal loopback address.
+
+**Findings (2026-10-01):**
+
+- **Apple Silicon is covered.** Every compiled package in `uv.lock` (14)
+  publishes macOS arm64 wheels.
+- **Intel is not.** `cryptography` 50.0.1 and `argon2-cffi-bindings` 26.1.0
+  publish no x86_64 macOS wheels. Supporting Intel means building them from
+  source (cryptography needs Rust) or pinning releases that still had Intel
+  wheels.
+- **python.org has no embeddable macOS Python.** The relocatable choice is
+  **python-build-standalone** (the builds `uv` uses), for arm64 and x86_64.
+
+**Scope:**
+
+- **Apple Silicon only, unsigned, first.** Apple Silicon Macs have shipped
+  since late 2020, and Apple has sold no Intel Macs since 2023.
+- **Browser only and no MongoDB bundled**, as on Windows.
+
+**Work:**
+
+1. **Runtime and dependencies.** `build.py` (or a sibling under
+   `tools/macos/`) fetches python-build-standalone, pinned by sha256, and
+   installs `uv.lock` as macOS arm64 wheels with
+   `uv pip --python-platform aarch64-apple-darwin --only-binary :all:`, as the
+   Windows build does for its platform.
+2. **App bundle.** `Monguana.app/Contents/` with `Info.plist`
+   (`LSUIElement` for a menu-bar app with no Dock icon), the icon as `.icns`,
+   and a small executable in `Contents/MacOS` that runs the launcher with the
+   bundled Python.
+3. **Launcher changes.** Data in `~/Library/Application Support/Monguana`
+   (today it is `~/.local/share/monguana` off Windows). The menu-bar icon is
+   pystray, which needs PyObjC on macOS and must run on the main thread.
+   Messages via `osascript` instead of the Windows message box.
+4. **DMG.** `hdiutil`, with the usual drag-to-Applications window.
+5. **Updates.** Dragging a new `Monguana.app` over the old one keeps the data,
+   which lives outside the app. Nothing stops a running copy first, unlike
+   the Windows installer, so either say "Quit from the menu bar first" or ship
+   a `.pkg` whose preinstall script runs `--stop`.
+6. **CI.** A `macos` workflow on a GitHub macOS (arm64) runner: unit tests,
+   build the bundle and DMG, mount it, run `--check`, start, stop, and attach
+   the DMG to `v*` releases, as `windows.yml` does.
+7. **Docs.** An INSTALL.md section, the wiki's Installing page, and
+   `docs/UPGRADE_TEST.md` steps for the Mac.
+
+**Signing (later, a decision for the owner).** Without an Apple Developer ID,
+Gatekeeper blocks a downloaded app. Since macOS 15 the right-click → Open
+bypass is gone: people must try to open it, then use **System Settings →
+Privacy & Security → Open Anyway**. With the Apple Developer Program
+(US$99/year), every binary in the bundle is signed with hardened runtime, the
+DMG is notarized with `notarytool` and stapled. The bundled Python may need
+entitlements for cffi; that needs a real Mac to establish.
+
+**Intel (only if asked).** Universal or separate x86_64 builds, after solving
+the two missing wheels above.
+
+**Testing.** No Mac on the development workstation: CI covers the build and
+`--check`, and the first hand test (install, menu-bar icon, sign-in, update
+over an older build) needs a real Mac.
+
+**IguanaXterm** gets the same phase (its ROADMAP.md); the work is shared.
+
 ## Beyond the original
 
 Not gaps — ideas the rewrite could take further:
@@ -426,3 +505,5 @@ Not gaps — ideas the rewrite could take further:
 38 (native Windows install) is in progress.
 
 39 (backend plugins, tinymongo first) is done.
+
+40 (native macOS install) is planned: Apple Silicon, unsigned, first.
