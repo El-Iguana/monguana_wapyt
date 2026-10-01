@@ -51,6 +51,8 @@ from wapyt import (
     TreeItem,
 )
 
+from services.about import LICENSE as ABOUT_LICENSE, RELEASES_URL, REPO, REPO_URL, VERSION, WIKI_URL
+from services.about_service import AboutService
 from services.connection_service import ConnectionService
 from services.job_service import JobService
 from services.docfmt import (
@@ -155,6 +157,7 @@ _TOOLBAR_BUTTONS = (
     ("users", "Users", "mdi-account-group"),
     ("password", "Password", "mdi-key"),
     ("shortcuts", "Shortcuts", "mdi-keyboard-outline"),
+    ("about", "About", "mdi-information-outline"),
 )
 
 _TYPE_ICONS = {
@@ -278,11 +281,13 @@ class Monguana(MainWindow):
         # element id of the <textarea> an editor replaces -> {"editor", "host", "proxies"}
         self._editors: dict[str, dict] = {}
         self._editor_ready = None                    # future: did the bundle load?
+        self._release: dict = {}                     # AboutService.latest(), once per load
 
         self._build_chrome()
         _spawn(self._load_identity(), "identity load")
         _spawn(self._reload_connections(), "connection list")
         _spawn(self._load_settings(), "settings")
+        _spawn(self._check_release(), "release check")
 
     # ------------------------------------------------------------------
     # Chrome
@@ -403,6 +408,11 @@ class Monguana(MainWindow):
                 f'<span class="mdi {icon}"></span><span>{label}</span></button>'
             )
         parts.append('<span class="mg-toolbar-spacer"></span>')
+        # Shown by _check_release when a newer release is out; opens About.
+        parts.append(
+            '<button type="button" class="mg-update" data-top="about" id="mg-update" hidden>'
+            '<span class="mdi mdi-arrow-up-circle"></span><span id="mg-update-text"></span></button>'
+        )
         parts.append('<span class="mg-toolbar-user" id="mg-user"></span>')
         parts.append(
             '<button type="button" class="mg-toolbar-btn" data-top="logout" title="Sign out">'
@@ -854,6 +864,8 @@ class Monguana(MainWindow):
             self._password_dialog()
         elif action == "shortcuts":
             self._shortcuts_dialog()
+        elif action == "about":
+            self._about_dialog()
         elif action == "refresh":
             _spawn(self._refresh_all(), "refresh")
         elif not conn_id:
@@ -3779,6 +3791,74 @@ class Monguana(MainWindow):
         modal.show()
         await _refresh()
 
+    async def _check_release(self) -> None:
+        """
+        Ask the server whether a newer release is out (``about_service``:
+        cached there, and off with MONGUANA_UPDATE_CHECK=off) and, if so,
+        show the toolbar badge. Quiet on any failure.
+        """
+        result = await AboutService().latest_async()
+        self._release = dict(result) if result.get("ok") else {
+            "checked": False, "reason": "unreachable", "error": result.get("error", "")}
+        badge = _el("mg-update")
+        if badge and self._release.get("newer"):
+            _el("mg-update-text").textContent = f"Update {self._release['latest']}"
+            badge.title = f"Monguana {self._release['latest']} is out — see About"
+            badge.hidden = False
+        status = _el("mg-about-update")
+        if status:
+            status.innerHTML = self._release_html()
+
+    def _release_html(self) -> str:
+        """The About dialog's line on the release check."""
+        release = self._release
+        if not release:
+            return '<span class="mdi mdi-loading mdi-spin"></span> Checking for a newer release…'
+        if release.get("newer"):
+            published = f" (released {_esc(release['published'])})" if release.get("published") else ""
+            return (
+                f'<span class="mdi mdi-arrow-up-circle"></span> <b>Monguana {_esc(release["latest"])} '
+                f'is out</b>{published}. <a href="{_esc(release.get("url") or RELEASES_URL)}" '
+                'target="_blank" rel="noopener">What\'s new and how to update</a>'
+            )
+        if release.get("checked"):
+            return '<span class="mdi mdi-check-circle-outline"></span> This is the latest release.'
+        if release.get("reason") == "off":
+            return ('<span class="mdi mdi-minus-circle-outline"></span> Release checks are off '
+                    "(MONGUANA_UPDATE_CHECK). "
+                    f'<a href="{RELEASES_URL}" target="_blank" rel="noopener">See releases</a>')
+        return ('<span class="mdi mdi-cloud-off-outline"></span> Could not check for a newer release. '
+                f'<a href="{RELEASES_URL}" target="_blank" rel="noopener">See releases</a>')
+
+    def _about_dialog(self) -> None:
+        links = (
+            ("mdi-book-open-variant", "Wiki", "How to use it", WIKI_URL),
+            ("mdi-github", "Source", REPO, REPO_URL),
+            ("mdi-tag-outline", "Releases", "Downloads and what changed", RELEASES_URL),
+            ("mdi-bug-outline", "Issues", "Report a problem or ask for a feature",
+             f"{REPO_URL}/issues"),
+        )
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title="About Monguana", width=520, height=400))
+        modal.body.innerHTML = (
+            '<div class="mg-about">'
+            '<div class="mg-about-head">'
+            '<img class="mg-about-logo" src="/static/el_iguana_avatar.webp" alt="">'
+            '<div><div class="mg-about-name">Monguana '
+            f'<span class="mg-about-version">{_esc(VERSION)}</span></div>'
+            '<div class="mg-about-sub">A MongoDB GUI in the browser · pytincture · wapyt · '
+            f'{_esc(ABOUT_LICENSE)} license</div></div></div>'
+            f'<div class="mg-about-update" id="mg-about-update">{self._release_html()}</div>'
+            '<div class="mg-about-links">' + "".join(
+                f'<a class="mg-about-link" href="{_esc(url)}" target="_blank" rel="noopener">'
+                f'<span class="mdi {icon}"></span><span><b>{_esc(label)}</b>'
+                f'<small>{_esc(hint)}</small></span></a>'
+                for icon, label, hint, url in links
+            ) + "</div></div>"
+        )
+        modal.show()
+        if not self._release:
+            _spawn(self._check_release(), "release check")
+
     def _shortcuts_dialog(self) -> None:
         rows = (
             ("Enter", "Run the query (in the filter, sort or projection box)"),
@@ -3990,6 +4070,27 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
   font:12.5px ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;}
 .mg-nag{display:flex;flex-direction:column;gap:10px;padding:4px 2px;font:13px/1.55 system-ui,sans-serif;color:#cbd5f5;}
 .mg-nag p{margin:0;}
+.mg-update{display:inline-flex;align-items:center;gap:5px;margin-right:8px;padding:4px 10px;
+  border-radius:999px;border:1px solid rgba(16,185,129,.45);background:rgba(16,185,129,.12);
+  color:#6ee7b7;font:600 12px system-ui,sans-serif;cursor:pointer;}
+.mg-update[hidden]{display:none;}
+.mg-update:hover{background:rgba(16,185,129,.22);}
+.mg-about{display:flex;flex-direction:column;gap:14px;padding:4px 2px;font:13px/1.5 system-ui,sans-serif;color:#cbd5f5;}
+.mg-about-head{display:flex;align-items:center;gap:14px;}
+.mg-about-logo{width:56px;height:56px;border-radius:50%;}
+.mg-about-name{font-size:20px;font-weight:600;color:var(--mg-text);}
+.mg-about-version{font:600 13px ui-monospace,Menlo,Consolas,monospace;color:#6ee7b7;margin-left:4px;}
+.mg-about-sub{color:var(--mg-muted);font-size:12px;}
+.mg-about-update{padding:8px 10px;border-radius:6px;background:var(--mg-panel);border:1px solid var(--mg-line-2);}
+.mg-about-update .mdi-arrow-up-circle{color:#34d399;}
+.mg-about-update a,.mg-about-link{color:#6ee7b7;}
+.mg-about-links{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.mg-about-link{display:flex;align-items:flex-start;gap:9px;padding:9px 10px;border-radius:6px;
+  border:1px solid var(--mg-line-2);text-decoration:none;}
+.mg-about-link:hover{background:var(--mg-line);}
+.mg-about-link .mdi{font-size:20px;line-height:1.1;}
+.mg-about-link b{display:block;color:var(--mg-text);font-weight:600;}
+.mg-about-link small{color:var(--mg-muted);font-size:11.5px;}
 .mg-nag .mdi-shield-alert-outline{color:#fbbf24;font-size:17px;vertical-align:-2px;}
 .mg-nag code{padding:1px 5px;border-radius:4px;background:var(--mg-panel);color:#fde68a;}
 .mg-nag .mg-editor-actions{margin-top:6px;}

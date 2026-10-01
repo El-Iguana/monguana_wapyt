@@ -16,6 +16,7 @@ creates. Screenshots land next to this file (git-ignored).
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -534,6 +535,22 @@ def main() -> int:
         server_row.click(button="right")
         menu.locator("text=Show / hide system collections").click()
         expect(system_views).to_have_count(0, timeout=5000)
+
+        step("About: version, links, and the release check")
+        version = re.search(r'^version = "([^"]+)"$',
+                            (HERE.parents[1] / "pyproject.toml").read_text(), re.M).group(1)
+        page.click("[data-top=about]")
+        about = page.locator(".wapyt-modal-overlay").last
+        expect(about.locator(".mg-about-version")).to_have_text(version)
+        repo = "https://github.com/El-Iguana/monguana_wapyt"
+        for href in (f"{repo}/wiki", repo, f"{repo}/releases"):
+            expect(about.locator(f'a[href="{href}"]')).to_have_count(1)
+        # Answered one way or another: latest, newer, off or unreachable.
+        expect(about.locator("#mg-about-update")).not_to_contain_text("Checking", timeout=15000)
+        print("    release check:", about.locator("#mg-about-update").inner_text())
+        shot(page, "16-about")
+        page.keyboard.press("Escape")
+        expect(about).to_have_count(0)
 
         step("a dialog closed with Escape is removed, not just hidden")
         before = page.locator(".wapyt-modal-overlay").count()
