@@ -24,12 +24,13 @@ PowerShell differs from macOS/Linux shells, both are given.
 3. [Configure](#3-configure)
 4. [Start it](#4-start-it)
 5. [Connect to a MongoDB server](#5-connect-to-a-mongodb-server)
-6. [Everyday tasks](#6-everyday-tasks): stop, logs, update, back up, reset a password, uninstall
+6. [Everyday tasks](#6-everyday-tasks): stop, logs, back up, reset a password, uninstall
 7. [Without compose](#7-without-compose)
 8. [Reaching Monguana from other machines](#8-reaching-monguana-from-other-machines)
 9. [Troubleshooting](#9-troubleshooting)
 10. [What was actually tested](#10-what-was-actually-tested)
 11. [Windows without Docker (native installer)](#11-windows-without-docker-native-installer)
+12. [Updating](#12-updating)
 
 ---
 
@@ -334,15 +335,7 @@ The container restarts with the engine unless you stopped it. (Podman on Linux
 does not start containers at boot by itself; `podman generate systemd` or a
 Quadlet does, see Podman's documentation.)
 
-**Update to a newer version**
-
-```sh
-git pull
-docker compose up -d --build
-```
-
-Your accounts, connections and layouts live in the `monguana-data` volume and
-survive updates and rebuilds.
+**Update to a newer version:** see [section 12](#12-updating).
 
 **Back up the data volume** — the SQLite database and `secret.key`, which
 encrypts the stored MongoDB passwords. *Without `secret.key` the stored
@@ -583,7 +576,7 @@ networking of section 5 applies.
 
 **Your data** (accounts, saved connections, the key that encrypts their
 passwords, logs) is in `%LOCALAPPDATA%\Monguana`. Upgrading keeps it: run the
-new installer over the old one. To back it up, quit Monguana from the tray and
+new installer over the old one (see [section 12](#12-updating)). To back it up, quit Monguana from the tray and
 copy that folder. Keep `secret.key` with `monguana.db`; without it, the saved
 passwords cannot be decrypted.
 
@@ -609,3 +602,99 @@ types, stops it and uninstalls it. The installer from that build was also
 installed and used by hand on **Windows 11** (2026-09-29), including the tray
 icon, the first-run message box and the Start-menu shortcuts.
 
+**Not tested yet:** installing a new version over an earlier one. The
+checklist for it is [docs/UPGRADE_TEST.md](docs/UPGRADE_TEST.md).
+
+---
+
+## 12. Updating
+
+### Knowing there is a new version
+
+From **2.2.0** on, Monguana tells you. The server asks GitHub for the latest
+release once every 6 hours. When a newer one is out, the toolbar shows an
+**Update x.y.z** badge and **About** links to the release. Set
+`MONGUANA_UPDATE_CHECK=off` in `.env` (or the environment) for a computer that
+must not call out; About then just links to the releases page.
+
+Before 2.2.0 there is no notice. Watch the repository's releases on GitHub
+(**Watch → Custom → Releases**) or check
+[the releases page](https://github.com/El-Iguana/monguana_wapyt/releases).
+
+**About** (toolbar) shows the version you are running.
+
+### Before you update
+
+Your data is kept by every kind of update below. A backup costs a minute and
+lets you go back, though: see *Back up the data volume* in
+[section 6](#6-everyday-tasks), or copy `%LOCALAPPDATA%\Monguana` with
+Monguana quit, on Windows.
+
+### Container, cloned with Git
+
+In the `monguana_wapyt` folder:
+
+```sh
+git pull
+docker compose up -d --build
+```
+
+Use the same compose file and options you started it with: add
+`-f compose.host-network.yaml` after `compose` for host networking, and
+`--profile mongo` if you run the bundled MongoDB. The data volume
+(`monguana-data`) is kept, and so are tinymongo stores (`monguana-tinymongo`)
+and the bundled MongoDB's data.
+
+If `.env.example` has new settings, copy any you want into your `.env`; a
+setting left out keeps its default.
+
+The build leaves the old image behind, untagged; `docker image prune` removes
+it.
+
+### Container, downloaded as a ZIP
+
+1. Download the new ZIP (**Code → Download ZIP**, or the source archive on a
+   release) and unzip it into a **new** folder.
+2. Copy your `.env` from the old folder into the new one.
+3. In the new folder, `docker compose up -d --build` (with the same options as
+   above).
+
+The compose project, container and volumes have fixed names, so the new
+folder takes over the same container and the same data. Delete the old folder
+afterwards.
+
+### Windows installer
+
+1. Download the new `Monguana-<version>-setup.exe` from the
+   [releases](https://github.com/El-Iguana/monguana_wapyt/releases).
+2. Run it. **Don't uninstall first.** It recognises the existing install,
+   installs into the same folder, and stops a running Monguana (tray included)
+   before replacing anything.
+3. Start Monguana. It may ask again about the desktop and sign-in shortcuts;
+   your answers don't remove the ones you already have.
+
+The program files are replaced whole, and `%LOCALAPPDATA%\Monguana`
+(accounts, connections, `secret.key`, logs) is left alone. Settings → Apps
+shows one Monguana, at the new version.
+
+### From source
+
+```sh
+git pull
+uv sync
+../wa_pytincture_widgetset/scripts/dev_wheel.sh appcode   # if wapyt changed
+uv run python service.py
+```
+
+### What happens to the database
+
+The new version updates the database the first time it starts, and only ever
+*adds* to it (a column, a table). Your data stays as it was.
+
+### Going back to an earlier version
+
+Not supported as such: whether an older version runs on a database a newer
+one has updated is not tested. To go back reliably,
+restore the backup you made before updating, then install the older version:
+the release's `setup.exe` on Windows, or `git checkout vX.Y.Z` and
+`docker compose up -d --build` for the container.
