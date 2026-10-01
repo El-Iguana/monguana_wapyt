@@ -215,9 +215,11 @@ def build_filter(rows, logic: str = "and") -> str:
     """
     Filter text for the builder's rows. Raises BuilderError naming the row.
 
-    ``and`` merges conditions on the same field (``{age: {$gte: 18, $lt: 65}}``)
-    and only falls back to ``$and`` when two would collide (an equality and
-    anything else, or the same operator twice). ``or`` is always ``$or``.
+    One condition is written on its own (``{age: {$gte: 18}}``). Two or more
+    are always a list under the chosen operator, each condition in its own
+    braces: ``{$and: [{age: {$gte: 18}}, {age: {$lt: 65}}]}``, or ``$or``.
+    MongoDB would also take an AND as one merged object, but the explicit
+    list is what people expect from picking AND, and reads row for row.
     """
     parts: list[tuple[str, str, str]] = []
     for index, row in enumerate(rows or [], start=1):
@@ -233,27 +235,7 @@ def build_filter(rows, logic: str = "and") -> str:
     def single(key: str, op: str, value: str) -> str:
         return f"{{{key}: {value}}}" if op == "$eq" else f"{{{key}: {{{op}: {value}}}}}"
 
-    if (logic or "and").lower() == "or":
-        if len(parts) == 1:
-            return single(*parts[0])
-        return "{$or: [" + ", ".join(single(*part) for part in parts) + "]}"
-
-    by_field: dict[str, list[tuple[str, str]]] = {}
-    for key, op, value in parts:
-        by_field.setdefault(key, []).append((op, value))
-    clash = any(
-        len(ops) > 1 and (
-            any(op == "$eq" for op, _ in ops) or len({op for op, _ in ops}) < len(ops)
-        )
-        for ops in by_field.values()
-    )
-    if clash:
-        return "{$and: [" + ", ".join(single(*part) for part in parts) + "]}"
-
-    fields = []
-    for key, ops in by_field.items():
-        if len(ops) == 1 and ops[0][0] == "$eq":
-            fields.append(f"{key}: {ops[0][1]}")
-        else:
-            fields.append(f"{key}: {{" + ", ".join(f"{op}: {value}" for op, value in ops) + "}")
-    return "{" + ", ".join(fields) + "}"
+    if len(parts) == 1:
+        return single(*parts[0])
+    operator = "$or" if (logic or "and").lower() == "or" else "$and"
+    return f"{{{operator}: [" + ", ".join(single(*part) for part in parts) + "]}"

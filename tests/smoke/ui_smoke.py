@@ -357,7 +357,8 @@ def main() -> int:
         expect(preview).to_have_attribute("data-state", "error")
         expect(preview).to_contain_text("Row 2")
         rows_qb.nth(1).locator("[data-qb=value]").fill("2026-03-01")
-        built = '{status: {$in: ["paid", "new"]}, placed: {$gte: ISODate("2026-03-01")}}'
+        built = ('{$and: [{status: {$in: ["paid", "new"]}}, '
+                 '{placed: {$gte: ISODate("2026-03-01")}}]}')
         expect(preview).to_have_text(built)
         shot(page, "07b-builder")
         builder.locator("[data-mg=qb_apply]").click()
