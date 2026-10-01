@@ -573,6 +573,12 @@ in the background (`_sample_fields`) so completions offer field paths at once.
   unsaved text with it.
 - The document editor's own `keydown` listener skips `defaultPrevented`, or
   Ctrl+S would save twice.
+- **Outer braces are optional.** `mql.parse_braced` retries text that does
+  not parse as `{…}` (filter, sort, projection, update, a bare pipeline
+  stage), and after a successful run `_add_braces` rewrites the box to the
+  braced text it was read as. Accepting a field completion writes
+  `field: ` — and `{field: }` in an empty filter/sort/projection box
+  (`objectBox`, `applyField` in `entry.js`).
 - To change the editor: edit `tools/codemirror/entry.js`, run `build.sh`,
   commit the regenerated `monguana-editor.js` and `VERSION` together
   (`tests/test_vendor.py` compares them). `node_modules` is not committed.

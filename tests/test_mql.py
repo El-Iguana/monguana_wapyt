@@ -101,6 +101,25 @@ def test_parse_object_blank_is_empty_and_arrays_are_refused():
         mql.parse_object("[1]")
 
 
+def test_missing_outer_braces_are_forgiven():
+    assert mql.parse_object('status: "active", age: {$gte: 21}') == {
+        "status": "active", "age": {"$gte": 21}}
+    assert mql.parse_object("created: -1", "sort") == {"created": -1}
+    assert mql.parse_update("$set: {a: 1}") == {"$set": {"a": 1}}
+    assert mql.parse_pipeline("$match: {a: 1}") == [{"$match": {"a": 1}}]
+
+
+def test_forgiving_braces_keeps_the_real_error():
+    # Inside braces the error is the person's own, not a wrapped retry's.
+    with pytest.raises(mql.MQLError) as braced:
+        mql.parse_object("{a: }")
+    with pytest.raises(mql.MQLError):
+        mql.parse_object("a: ")
+    assert "line" in str(braced.value) or "column" in str(braced.value)
+    with pytest.raises(mql.MQLError, match="must be an object"):
+        mql.parse_object('"just a string"')
+
+
 # -- safety --------------------------------------------------------------------
 
 @pytest.mark.parametrize("text", [

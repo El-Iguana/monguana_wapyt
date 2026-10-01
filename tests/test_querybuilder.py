@@ -24,9 +24,19 @@ def parsed(rows, logic="and"):
     return mql.parse(text)
 
 
+def by_field(rows):
+    """An AND of conditions on distinct fields, as one {field: condition} map."""
+    result = parsed(rows)
+    assert list(result) == ["$and"], result
+    merged = {}
+    for condition in result["$and"]:
+        merged.update(condition)
+    return merged
+
+
 def test_values_are_written_as_their_type():
     """The original coerced everything to a number or a string."""
-    result = parsed([
+    result = by_field([
         row("zip", value="02134"),
         row("age", "$gte", "number", "18"),
         row("_id", "$eq", "objectid", OID),
@@ -48,15 +58,17 @@ def test_values_are_written_as_their_type():
     }
 
 
-def test_and_merges_ranges_on_one_field():
-    assert build_filter([row("age", "$gte", "number", "18"), row("age", "$lt", "number", "65")]) \
-        == "{age: {$gte: 18, $lt: 65}}"
+def test_and_is_a_list_of_conditions():
+    text = build_filter([row("age", "$gte", "number", "18"), row("age", "$lt", "number", "65")])
+    assert text == "{$and: [{age: {$gte: 18}}, {age: {$lt: 65}}]}"
+    assert parsed([row("s", value="a"), row("s", "$ne", value="b")]) == {
+        "$and": [{"s": "a"}, {"s": {"$ne": "b"}}]
+    }
 
 
-def test_and_falls_back_to_dollar_and_on_collisions():
-    text = build_filter([row("s", value="a"), row("s", "$ne", value="b")])
-    assert text.startswith("{$and: [")
-    assert mql.parse(text) == {"$and": [{"s": "a"}, {"s": {"$ne": "b"}}]}
+def test_one_condition_needs_no_list():
+    assert build_filter([row("s", value="a")], "and") == '{s: "a"}'
+    assert build_filter([row("s", value="a")], "or") == '{s: "a"}'
 
 
 def test_or():
@@ -66,7 +78,7 @@ def test_or():
 
 
 def test_lists_regex_exists_type_size():
-    result = parsed([
+    result = by_field([
         row("tag", "$in", "string", "red, blue ,green"),
         row("n", "$nin", "number", "1,2"),
         row("name", "$regex", "string", "^jo/hn"),

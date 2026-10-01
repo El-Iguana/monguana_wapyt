@@ -144,6 +144,25 @@ def main() -> int:
         page.keyboard.press("Escape")
         sort_box.fill("")
 
+        step("a field completed in an empty box brings its braces and colon")
+        sort_box.click()
+        page.keyboard.type("numbe")
+        expect(page.locator(".cm-tooltip-autocomplete li").first).to_contain_text(
+            "number", timeout=10000)
+        page.wait_for_timeout(200)  # past CodeMirror's 75 ms accept guard
+        page.keyboard.press("Enter")
+        page.keyboard.type("-1")
+        assert view.locator(f"#{tid}-sort").input_value() == "{number: -1}", \
+            view.locator(f"#{tid}-sort").input_value()
+        sort_box.fill("")
+
+        step("a filter typed without braces runs, and the box shows them")
+        set_filter('status: "paid"')
+        page.wait_for_timeout(1200)
+        assert "137" not in view.locator(".mg-summary").inner_text()
+        assert view.locator(f"#{tid}-filter").input_value() == '{status: "paid"}', \
+            view.locator(f"#{tid}-filter").input_value()
+
         step("filter with shell syntax: dates and nested fields")
         set_filter(
             '{status: "paid", placed: {$gte: ISODate("2026-03-01")}, "customer.vip": false}'
@@ -338,7 +357,8 @@ def main() -> int:
         expect(preview).to_have_attribute("data-state", "error")
         expect(preview).to_contain_text("Row 2")
         rows_qb.nth(1).locator("[data-qb=value]").fill("2026-03-01")
-        built = '{status: {$in: ["paid", "new"]}, placed: {$gte: ISODate("2026-03-01")}}'
+        built = ('{$and: [{status: {$in: ["paid", "new"]}}, '
+                 '{placed: {$gte: ISODate("2026-03-01")}}]}')
         expect(preview).to_have_text(built)
         shot(page, "07b-builder")
         builder.locator("[data-mg=qb_apply]").click()

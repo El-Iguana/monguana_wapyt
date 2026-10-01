@@ -22,7 +22,7 @@ import { syntaxHighlighting, HighlightStyle, bracketMatching, indentOnInput }
   from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 
-const VERSION = "1";
+const VERSION = "2";
 
 // ── Look ─────────────────────────────────────────────────────────────────────
 // Matches Monguana's slate palette (monguana.py _CSS) rather than a stock theme.
@@ -127,8 +127,31 @@ const HELPERS = [
   },
 }));
 
+// Accepting a field writes the key and its colon, so the person goes straight
+// on to the value. In an object box (filter, sort, projection) that is still
+// empty, the braces come too: {field: |}.
+function applyField(objectBox) {
+  return (view, completion, from, to) => {
+    const doc = view.state.doc.toString();
+    const rest = doc.slice(to);
+    const hasColon = /^\s*:/.test(rest);
+    const key = hasColon ? completion.label : `${completion.label}: `;
+    if (objectBox && !doc.slice(0, from).trim() && !rest.trim()) {
+      view.dispatch({
+        changes: { from: 0, to: doc.length, insert: `{${key}}` },
+        selection: { anchor: 1 + key.length },
+      });
+      return;
+    }
+    view.dispatch({
+      changes: { from, to, insert: key },
+      selection: { anchor: from + key.length + (hasColon ? rest.indexOf(":") + 1 : 0) },
+    });
+  };
+}
+
 // Field paths are per editor: the page sets them from the sampled schema.
-function completionSource(getFields) {
+function completionSource(getFields, objectBox) {
   return (context) => {
     const word = context.matchBefore(/[\w$.]+/);
     if (!word && !context.explicit) return null;
@@ -140,6 +163,7 @@ function completionSource(getFields) {
     } else {
       const fields = getFields().map((field) => ({
         label: field.path, detail: field.types || "", type: "property", boost: 2,
+        apply: applyField(objectBox),
       }));
       options = fields.concat(HELPERS, text ? [] : OPERATORS);
     }
@@ -192,7 +216,10 @@ function create(host, options = {}) {
     javascript(),
     syntaxHighlighting(highlight),
     theme,
-    autocompletion({ override: [completionSource(() => fields)], activateOnTyping: true }),
+    autocompletion({
+      override: [completionSource(() => fields, Boolean(options.objectBox))],
+      activateOnTyping: true,
+    }),
     // Ours first: in a one-line box our Enter must decide before
     // completionKeymap's, which falls through when it declines.
     Prec.highest(keymap.of(keys)),

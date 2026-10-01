@@ -82,8 +82,10 @@ set of create options. See CLAUDE.md, *Index CRUD*.
   `"02134"` a number and an ObjectId or a date a string.
 - Operators fit the type: `=, ≠, >, ≥, <, ≤, in, not in, matches` (strings),
   `exists`, `is of type`, and `array size` for fields sampled as arrays.
-- AND merges conditions on one field (`{age: {$gte: 18, $lt: 65}}`) and only
-  falls back to `$and` when two would collide; OR is `$or`.
+- Two or more conditions are a list under `$and` or `$or`, each in its own
+  braces (`{$and: [{age: {$gte: 18}}, {age: {$lt: 65}}]}`); one stands alone.
+  (It first merged AND into one object; changed 2026-10-01 at the user's
+  request, so picking AND shows the list it implies.)
 - Not done: reading an existing filter back into rows. Apply replaces the
   filter.
 

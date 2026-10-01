@@ -1823,6 +1823,20 @@ class Monguana(MainWindow):
             "pipeline": value("pipeline"),
         }
 
+    def _add_braces(self, tid: str, query: dict, roles) -> None:
+        """
+        The server forgives missing outer braces (``mql.parse_braced``); once
+        a query has run, show the person the braced text it was read as. Only
+        boxes still holding the text that ran, so typing since is never lost.
+        """
+        for role in roles:
+            text = query.get(role, "")
+            stripped = text.strip()
+            if not stripped or stripped[0] in "{[" or stripped.startswith(("/*", "//")):
+                continue
+            if self._query(tid).get(role) == text:
+                self._set_text(f"{tid}-{role}", "{" + stripped + "}")
+
     def _status(self, tid: str, message: str = "", kind: str = "error") -> None:
         status = _el(f"{tid}-status")
         if not status:
@@ -2000,6 +2014,9 @@ class Monguana(MainWindow):
             "onChange": proxies[0],
             "onRun": proxies[1],
             "onSave": proxies[2],
+            # Filter, sort and projection are one object: completing a field
+            # in an empty box writes its braces too (see entry.js applyField).
+            "objectBox": role in ("filter", "sort", "projection"),
         }
         if max_height:
             options["maxHeight"] = max_height
@@ -2494,6 +2511,7 @@ class Monguana(MainWindow):
         if not result.get("ok"):
             self._status(tid, result.get("error", "Query failed"))
             return
+        self._add_braces(tid, query, ("filter", "sort", "projection"))
         self._status(tid)
         view.update({
             "docs": result["docs"], "total": result.get("total"),
@@ -3095,6 +3113,8 @@ class Monguana(MainWindow):
         if not result.get("ok"):
             self._status(tid, result.get("error", "Preview failed"))
             return
+        self._add_braces(tid, query, ("filter", "update") if is_update else ("filter",))
+        query = self._query(tid)
         self._status(tid)
         matched = result["matched"]
         verb = "update" if is_update else "delete"
