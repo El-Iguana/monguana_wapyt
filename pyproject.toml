@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "monguana"
-version = "2.1.0"
+version = "2.2.0"
 description = "Browser-based MongoDB manager — pytincture + wapyt"
 readme = "README.md"
 license = { text = "MIT" }
