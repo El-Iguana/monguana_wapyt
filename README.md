@@ -104,7 +104,7 @@ cache, and throughput per second — queries, inserts, updates, deletes,
 commands, network — with a five-minute sparkline each, refreshed every 5
 seconds while the tab is in front. Below, every database's size, documents,
 indexes and profiler state, and the operations running right now, longest
-first.
+first — right-click one to kill it.
 
 **Query profiler.** Turn MongoDB's profiler off, on for slow operations
 (with the threshold and sample rate), or on for everything — per database,

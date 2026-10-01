@@ -4096,9 +4096,14 @@ class Monguana(MainWindow):
                     id_field="opid",
                     selection="single",
                     empty_text="Loading…",
+                    context_actions=[
+                        TableAction("kill", "Kill operation…", "mdi-close-octagon-outline",
+                                    danger=True),
+                    ],
                 ),
                 container=_el(f"{tid}-ops"),
             )
+            dash["ops_table"].on_action(lambda payload: self._dash_op_action(tid, payload))
             self._start_poll(tid)
         self.tabs.set_active(tid)
         _spawn(self._dash_refresh(tid, full=True), "dashboard")
@@ -4117,7 +4122,8 @@ class Monguana(MainWindow):
     <div class="mg-hint">This backend reports no server status: databases only.</div>"""
         ops = f"""
     <section class="mg-dash-section">
-      <h3>Running operations <small id="{tid}-ops-note"></small></h3>
+      <h3>Running operations <small id="{tid}-ops-note"></small>
+        <small>right-click one to kill it</small></h3>
       <div class="mg-dash-table" id="{tid}-ops"></div>
     </section>""" if live else ""
         auto = f"""
@@ -4252,6 +4258,7 @@ class Monguana(MainWindow):
             if note:
                 note.textContent = ""
             return
+        dash["ops"] = {op["opid"]: op for op in ops}
         table.set_empty_text("Nothing is running.")
         table.set_rows([{
             **op,
@@ -4261,6 +4268,34 @@ class Monguana(MainWindow):
         } for op in ops])
         if note:
             note.textContent = f"{len(ops)} active, longest first"
+
+    def _dash_op_action(self, tid: str, payload: dict) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None or payload.get("action") != "kill":
+            return
+        opid = str(payload.get("id") or "")
+        op = (dash.get("ops") or {}).get(opid)
+        if op is None:
+            self._toast("That operation is no longer listed.")
+            return
+        about = " · ".join(part for part in (
+            op.get("op"), op.get("ns"), op.get("app"), op.get("client")) if part)
+        if not js.confirm(f"Kill operation {opid}?\n\n{about}\n{op.get('query', '')[:200]}\n\n"
+                          "Its client gets an error. A write may have changed some "
+                          "documents already; those changes stay."):
+            return
+
+        async def _kill() -> None:
+            result = await MongoService().kill_op_async(dash["conn"], opid)
+            if not result.get("ok"):
+                self._toast(result.get("error", "Could not kill the operation"))
+                return
+            self._toast(f"Asked the server to kill operation {opid}.")
+            # It stops at its next interrupt check; look again shortly.
+            await asyncio.sleep(1)
+            await self._dash_refresh(tid)
+
+        _spawn(_kill(), "kill operation")
 
     async def _dash_databases(self, tid: str) -> None:
         dash = self._dashes.get(tid)

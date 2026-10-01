@@ -501,6 +501,7 @@ def test_limited_refuses_what_it_cannot_do(env, limited):
     assert refused(mongo.server_status(limited)) == "Limited connections cannot report server status"
     assert "profile" in refused(mongo.set_profiler(limited, LIMITED_DB, 2))
     assert "profile" in refused(mongo.profiler_entries(limited, LIMITED_DB))
+    assert "kill" in refused(mongo.kill_op(limited, "1"))
     assert "empty collections" in refused(mongo.create_collection(limited, LIMITED_DB, "x"))
     assert "empty databases" in refused(mongo.create_database(limited, f"{LIMITED_DB}2", "x"))
     assert "TTL" in refused(mongo.create_index(limited, LIMITED_DB, "items", "{n: 1}",
@@ -634,8 +635,9 @@ def test_server_status_reports_counters_and_operations(env):
     assert server["connections"]["current"] >= 1
     assert set(server["opcounters"]) == {"insert", "query", "update", "delete", "getmore", "command"}
     assert server["mem"]["resident"]  # not dropped, as excluding "metrics" does
-    # Its own $currentOp is left out.
+    # Its own $currentOp and the server's background threads are left out.
     assert not any("$currentOp" in op["query"] for op in status["ops"])
+    assert not any(op["op"] == "none" and not op["client"] for op in status["ops"])
 
 
 def test_database_stats_include_the_profiler_level(env):
@@ -689,3 +691,49 @@ def test_the_profiler_records_groups_reopens_and_clears(env):
         ok(mongo.set_profiler(conn, DB, before["level"], before["slowms"], before["sample_rate"]))
     assert not mongo.set_profiler(conn, DB, 3)["ok"]
     assert not mongo.set_profiler(conn, "local", 1)["ok"]
+
+
+def test_kill_op_interrupts_a_running_query(env):
+    """A slow $where on a second client, found in the dashboard's list and killed."""
+    import threading
+    import time
+
+    from pymongo import MongoClient
+    from pymongo.errors import OperationFailure
+
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.insert(conn, DB, "slow", "[" + ", ".join(f"{{_id: {i}}}" for i in range(40)) + "]"))
+    host, port, *rest = SPEC.split(":", 3)
+    other = MongoClient(host, int(port), username=rest[0] if rest else None,
+                        password=rest[1] if len(rest) > 1 else None, appname="kill-me")
+    outcome: dict = {}
+
+    def slow() -> None:
+        try:
+            # ~20 s unless interrupted: 40 documents x 500 ms.
+            list(other[DB]["slow"].find({"$where": "sleep(500) || true"}))
+            outcome["result"] = "finished"
+        except OperationFailure as exc:
+            outcome["result"] = exc.code
+
+    worker = threading.Thread(target=slow)
+    worker.start()
+    try:
+        target = None
+        for _ in range(50):
+            ops = ok(mongo.server_status(conn))["ops"]
+            # Not the driver's own monitor (an awaitable hello), which is hidden.
+            assert not any(op["app"] == "kill-me" and op["op"] == "command" for op in ops)
+            target = next((op for op in ops if op["app"] == "kill-me"), None)
+            if target:
+                break
+            time.sleep(0.1)
+        assert target, "the slow query never showed up in the list"
+        assert ok(mongo.kill_op(conn, target["opid"]))["opid"] == target["opid"]
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert outcome["result"] == 11601  # Interrupted
+    finally:
+        worker.join(timeout=30)
+        other.close()
+    assert not mongo.kill_op(conn, "")["ok"]
