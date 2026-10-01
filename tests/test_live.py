@@ -482,6 +482,11 @@ def test_limited_fallbacks_still_work(env, limited):
     assert len(grouped["docs"]) == 2
     assert ok(mongo.preview_write(limited, LIMITED_DB, "items", "{n: 2}"))["matched"] == 2
 
+    # The dashboard without serverStatus: names and collection counts only.
+    row = next(row for row in ok(mongo.database_stats(limited))["databases"]
+               if row["name"] == LIMITED_DB)
+    assert row["collections"] == 1 and row["objects"] is None and row["profile_level"] is None
+
 
 def test_limited_refuses_what_it_cannot_do(env, limited):
     mongo = env["mongo"]
@@ -493,6 +498,9 @@ def test_limited_refuses_what_it_cannot_do(env, limited):
     assert refused(mongo.explain(limited, LIMITED_DB, "items")) == \
         "Limited connections cannot explain queries"
     assert "rename" in refused(mongo.rename_collection(limited, LIMITED_DB, "items", "x"))
+    assert refused(mongo.server_status(limited)) == "Limited connections cannot report server status"
+    assert "profile" in refused(mongo.set_profiler(limited, LIMITED_DB, 2))
+    assert "profile" in refused(mongo.profiler_entries(limited, LIMITED_DB))
     assert "empty collections" in refused(mongo.create_collection(limited, LIMITED_DB, "x"))
     assert "empty databases" in refused(mongo.create_database(limited, f"{LIMITED_DB}2", "x"))
     assert "TTL" in refused(mongo.create_index(limited, LIMITED_DB, "items", "{n: 1}",
@@ -616,3 +624,68 @@ def test_copy_mongodb_to_tinymongo_and_back(env, tiny):
         client = pool.client(1, conn)
         client.drop_database(source_db)
         client.drop_database(back_db)
+
+
+def test_server_status_reports_counters_and_operations(env):
+    status = ok(env["mongo"].server_status(env["conn"]))
+    assert status["status_error"] == "" and status["ops_error"] == ""
+    server = status["status"]
+    assert server["version"] and server["uptime_ms"] > 0
+    assert server["connections"]["current"] >= 1
+    assert set(server["opcounters"]) == {"insert", "query", "update", "delete", "getmore", "command"}
+    assert server["mem"]["resident"]  # not dropped, as excluding "metrics" does
+    # Its own $currentOp is left out.
+    assert not any("$currentOp" in op["query"] for op in status["ops"])
+
+
+def test_database_stats_include_the_profiler_level(env):
+    mongo = env["mongo"]
+    ok(mongo.insert(env["conn"], DB, "stats_probe", "{_id: 1}"))
+    row = next(row for row in ok(mongo.database_stats(env["conn"]))["databases"]
+               if row["name"] == DB)
+    assert row["objects"] >= 1 and row["collections"] >= 1 and row["profile_level"] == 0
+
+
+def test_the_profiler_records_groups_reopens_and_clears(env):
+    mongo, conn = env["mongo"], env["conn"]
+    ok(mongo.insert(env["conn"], DB, "profiled", "[{_id: 1, n: 1}, {_id: 2, n: 2}, {_id: 3, n: 2}]"))
+    before = ok(mongo.profiler_status(conn, DB))
+    try:
+        # Level only: slowms is the server's and is left alone.
+        settings = ok(mongo.set_profiler(conn, DB, 2))
+        assert settings["level"] == 2 and settings["slowms"] == before["slowms"]
+        # No index on n: a collection scan and a sort in memory.
+        ok(mongo.find(conn, DB, "profiled", "{n: 2}", "{n: -1}"))
+        ok(mongo.find(conn, DB, "profiled", "{n: 1}", "{n: -1}"))
+        ok(mongo.aggregate(conn, DB, "profiled", "[{$match: {n: 2}}]"))
+
+        entries = ok(mongo.profiler_entries(conn, DB, 50, 0, "query", "profiled"))["entries"]
+        found = [entry for entry in entries if entry["open"] and entry["open"]["mode"] == "find"]
+        assert found and all(entry["ns"] == f"{DB}.profiled" for entry in entries)
+        reopen = found[0]["open"]
+        assert reopen["coll"] == "profiled" and "\n" not in reopen["filter"]
+        # What a tab gets back parses and runs.
+        assert ok(mongo.find(conn, DB, "profiled", reopen["filter"], reopen["sort"]))["docs"]
+        assert found[0]["collscan"] and found[0]["plan"] == "COLLSCAN"
+        assert found[0]["in_memory_sort"]
+
+        groups = ok(mongo.profiler_summary(conn, DB, 0, "query", "profiled"))["groups"]
+        # {n: 2}, {n: 1} and the re-run above are one shape.
+        assert len(groups) == 1 and groups[0]["count"] == 3
+
+        aggregates = ok(mongo.profiler_entries(conn, DB, 50, 0, "command", "profiled"))["entries"]
+        assert any((entry["open"] or {}).get("mode") == "aggregate" for entry in aggregates)
+
+        # Reading the profile is itself profiled; that is left out.
+        everything = ok(mongo.profiler_entries(conn, DB, 500))["entries"]
+        assert everything and all(entry["ns"] != f"{DB}.system.profile" for entry in everything)
+        assert not ok(mongo.profiler_entries(conn, DB, 50, 10_000_000))["entries"]
+        assert not mongo.profiler_entries(conn, DB, 50, 0, "drop")["ok"]
+
+        cleared = ok(mongo.profiler_clear(conn, DB))
+        assert cleared["level"] == 2  # put back after the drop
+        assert not ok(mongo.profiler_entries(conn, DB, 50, 0, "query"))["entries"]
+    finally:
+        ok(mongo.set_profiler(conn, DB, before["level"], before["slowms"], before["sample_rate"]))
+    assert not mongo.set_profiler(conn, DB, 3)["ok"]
+    assert not mongo.set_profiler(conn, "local", 1)["ok"]

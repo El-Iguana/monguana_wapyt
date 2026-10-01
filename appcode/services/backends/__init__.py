@@ -80,6 +80,9 @@ CAPABILITIES = {
                 "documents are decoded and encoded",
     "bulk_write": "batched upserts for Merge; else one replace per document",
     "hello": "replica-set status; else none",
+    "server_status": "serverStatus, dbStats and $currentOp for the dashboard; else database "
+                     "names, sizes and collection counts only",
+    "profiler": "the query profiler (profile, system.profile); else hidden",
 }
 
 

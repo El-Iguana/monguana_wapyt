@@ -497,6 +497,10 @@ Not gaps — ideas the rewrite could take further:
   `$not`, `$or` inside an AND, numeric `$type`) is refused with a note and the
   rows are kept. Tests prove read → build → read is a fixed point.
 - Progress for exports, which stream but show no bar.
+- ~~A server dashboard and the query profiler~~ — done 2026-10-01. See
+  CLAUDE.md, *Dashboard and query profiler*. Not done yet: killing a running
+  operation from the dashboard (`killOp`), and a profile *filter* editor
+  (the server's `filter` option is shown when set, not edited).
 
 ## Order
 
