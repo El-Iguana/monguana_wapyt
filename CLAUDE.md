@@ -613,6 +613,9 @@ restore and copy between any of them.
   `appcode/services/about.py` (`VERSION`, shown in About), plus the README
   badge and `uv lock`. `tests/test_about.py` fails if the two disagree. Tag
   `vX.Y.Z` on `main`; `windows.yml` builds the installer and the release.
+  Updating is documented in INSTALL.md §12; `docs/UPGRADE_TEST.md` is the
+  hand test for an in-place update (CI only tests a fresh install). Run it
+  when the installer, launcher or database schema changes, and record it.
 - **About and the release check**: `services/about.py` (version + links, both
   sides), `release_check.py` (GitHub's latest-release API, cached 6 h / 30 min
   on failure, plain module), `about_service.py` (the BFF). Off with
