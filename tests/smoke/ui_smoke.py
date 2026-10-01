@@ -536,6 +536,59 @@ def main() -> int:
         menu.locator("text=Show / hide system collections").click()
         expect(system_views).to_have_count(0, timeout=5000)
 
+        step("dashboard: server tiles, databases with their profiler level")
+        server_row.click(button="right")
+        menu.locator("text=Dashboard").click()
+        expect(page.locator(".mg-dash .mg-tile").first).to_be_visible(timeout=15000)
+        # By its tab id: ".last" would follow later dashboard-like tabs.
+        dash = page.locator(f'.mg-dash[data-tab="{page.locator(".mg-dash").last.get_attribute("data-tab")}"]')
+        shop_stats = dash.locator("[id$='-dbs'] tr[data-row-id='shop']")
+        # Whatever level an earlier run left; it ends Off below.
+        expect(shop_stats).to_contain_text(re.compile("Off|Slow operations|Everything"),
+                                           timeout=15000)
+        # The rates need two samples, one poll apart.
+        expect(dash.locator("svg.mg-spark").first).to_be_visible(timeout=15000)
+        shot(page, "17-dashboard")
+
+        step("query profiler: on from the dashboard, records, reopens, off and cleared")
+        shop_stats.click(button="right")
+        page.locator(".wapyt-datatable-menu >> text=Profile every operation").last.click()
+        expect(shop_stats).to_contain_text("Everything", timeout=10000)
+        orders.dblclick()
+        profiled = page.locator(".mg-view").last
+        profiled_filter = profiled.locator("[data-role=filter-editor] .cm-content")
+        expect(profiled_filter).to_be_visible(timeout=15000)
+        expect(profiled.locator(".mg-summary")).to_have_text("1–50 of 137", timeout=15000)
+        profiled_filter.fill('{"customer.address.city": "Lisbon"}')
+        # Run, not Enter: a completion list open at that moment takes the Enter.
+        profiled_filter.press("Escape")
+        profiled.locator("[data-mg=run]").click()
+        expect(profiled.locator(".mg-summary")).to_have_text("1–44 of 44", timeout=10000)
+        shop.click(button="right")
+        menu.locator("text=Query profiler").click()
+        prof = page.locator(".mg-dash").last
+        expect(prof.locator("[data-mg=level][data-level='2']")).to_have_attribute(
+            "aria-pressed", "true", timeout=10000)
+        prof.locator("[data-mg=show][data-show=recent]").click()
+        prof.locator("[data-role=p-op]").select_option("query")
+        lisbon = prof.locator(".wapyt-datatable-table tbody tr[data-row-id]:has-text('Lisbon')").first
+        expect(lisbon).to_be_visible(timeout=10000)
+        shot(page, "18-profiler")
+        lisbon.dblclick()
+        details = page.locator(".wapyt-modal-overlay").last
+        expect(details.locator(".mg-warn")).to_contain_text("Collection scan")
+        details.locator("[data-prof=open]").click()
+        reopened = page.locator(".mg-view").last
+        rtid = reopened.get_attribute("data-tab")
+        expect(reopened.locator(".mg-summary")).to_have_text("1–44 of 44", timeout=15000)
+        assert "Lisbon" in reopened.locator(f"#{rtid}-filter").input_value()
+        page.locator(".wapyt-tabwidget-tabs >> text=shop · profiler").first.click()
+        prof.locator("[data-mg=level][data-level='0']").click()
+        expect(prof.locator(".mg-head-stats")).to_contain_text("Profiling is off", timeout=10000)
+        prof.locator("[data-mg=clear]").click()
+        expect(prof.locator(".mg-head-stats")).to_contain_text(" 0 recorded", timeout=10000)
+        expect(shop_stats).to_contain_text("Off", timeout=10000)
+
         step("About: version, links, and the release check")
         version = re.search(r'^version = "([^"]+)"$',
                             (HERE.parents[1] / "pyproject.toml").read_text(), re.M).group(1)

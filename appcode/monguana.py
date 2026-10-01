@@ -102,6 +102,28 @@ EDITOR_LOAD_SECONDS = 10
 
 PAGE_SIZES = (20, 50, 100, 200, 500)
 
+# The dashboard polls every DASH_POLL_SECONDS while its tab is in front and
+# keeps DASH_HISTORY samples for the sparklines (5 minutes).
+DASH_POLL_SECONDS = 5
+DASH_HISTORY = 60
+
+# Throughput tiles: counter (serverStatus opcounters/network), label, bytes?
+_RATE_TILES = (
+    ("query", "Queries", False),
+    ("getmore", "Getmores", False),
+    ("insert", "Inserts", False),
+    ("update", "Updates", False),
+    ("delete", "Deletes", False),
+    ("command", "Commands", False),
+    ("numRequests", "Requests", False),
+    ("bytesIn", "Network in", True),
+    ("bytesOut", "Network out", True),
+)
+
+_PROFILE_LEVELS = {0: "Off", 1: "Slow operations", 2: "Everything"}
+# system.profile's "op" values (mongo_service.PROFILE_OPS).
+_PROFILE_OPS = ("query", "getmore", "insert", "update", "remove", "command")
+
 # The document tree view: how deep, and how many nodes per page, before it
 # stops and says so. The original froze the tab on a large nested document.
 TREE_MAX_DEPTH = 10
@@ -153,6 +175,7 @@ _TOOLBAR_BUTTONS = (
     ("delete_conn", "Delete", "mdi-delete"),
     ("|", "", ""),
     ("refresh", "Refresh", "mdi-refresh"),
+    ("dashboard", "Dashboard", "mdi-view-dashboard-outline"),
     ("|", "", ""),
     ("users", "Users", "mdi-account-group"),
     ("password", "Password", "mdi-key"),
@@ -273,6 +296,7 @@ class Monguana(MainWindow):
         self._loading: set = set()
         self._selected: dict = {}                    # the tree node's data
         self._views: dict[str, dict] = {}            # tab id -> view state
+        self._dashes: dict[str, dict] = {}           # tab id -> dashboard / profiler state
         self._tab_counter = 0
         self._me: dict = {}
         # Per-user settings that follow the person (UiStateService "settings").
@@ -337,6 +361,7 @@ class Monguana(MainWindow):
                 empty_text="No connections yet.\nUse New connection to add one.",
                 context_actions=[
                     TreeAction("connect", "Connect / refresh", "mdi-connection", kinds=server),
+                    TreeAction("dashboard", "Dashboard", "mdi-view-dashboard-outline", kinds=server),
                     TreeAction("new_db", "Create database…", "mdi-database-plus", kinds=server,
                                requires=["create_collection"]),
                     TreeAction("restore", "Restore dump…", "mdi-backup-restore", kinds=server),
@@ -349,6 +374,8 @@ class Monguana(MainWindow):
                     TreeAction("toggle_system", "Show / hide system collections",
                                "mdi-eye-settings-outline", kinds=server + database),
                     TreeAction("refresh_db", "Refresh", "mdi-refresh", kinds=database),
+                    TreeAction("profiler", "Query profiler", "mdi-speedometer", kinds=database,
+                               requires=["profiler"]),
                     TreeAction("new_coll", "Create collection…", "mdi-table-plus", kinds=database,
                                requires=["create_collection"]),
                     TreeAction("dump_db", "Dump database", "mdi-download", kinds=database),
@@ -436,6 +463,12 @@ class Monguana(MainWindow):
         button = target.closest("[data-mg]")
         if not button or button.disabled:
             return
+        dash_el = button.closest(".mg-dash")
+        if dash_el:
+            tid = str(dash_el.getAttribute("data-tab"))
+            if tid in self._dashes:
+                self._dash_action(tid, str(button.getAttribute("data-mg")), button)
+            return
         view_el = button.closest(".mg-view")
         if not view_el:
             return
@@ -463,6 +496,10 @@ class Monguana(MainWindow):
     def _on_change(self, event) -> None:
         target = event.target
         if not target or not hasattr(target, "closest"):
+            return
+        dash_el = target.closest(".mg-dash")
+        if dash_el:
+            self._dash_change(str(dash_el.getAttribute("data-tab")), target)
             return
         view_el = target.closest(".mg-view")
         if not view_el:
@@ -845,6 +882,10 @@ class Monguana(MainWindow):
         }
         if action == "open":
             self._open_view(conn_id, db, coll, data.get("kind", "collection"))
+        elif action == "dashboard":
+            self._open_dashboard(conn_id)
+        elif action == "profiler":
+            self._open_profiler(conn_id, db)
         elif action == "dump_db":
             _spawn(self._start_dump(conn_id, db, ""), "dump database")
         elif action == "dump_coll":
@@ -872,6 +913,8 @@ class Monguana(MainWindow):
             self._toast("Select a connection first.")
         elif action == "edit_conn":
             _spawn(self._connection_editor(conn_id), "connection editor")
+        elif action == "dashboard":
+            self._open_dashboard(conn_id)
         elif action == "delete_conn":
             _spawn(self._delete_connection(conn_id), "connection delete")
 
@@ -1128,6 +1171,8 @@ class Monguana(MainWindow):
             return
         for tid in [tid for tid, view in self._views.items() if view["conn"] == conn_id]:
             self._close_view(tid)
+        for tid in [tid for tid, dash in self._dashes.items() if dash["conn"] == conn_id]:
+            self._close_dash(tid)
         self._selected = {}
         self._forget(conn_id)
         await self._reload_connections()
@@ -1750,6 +1795,7 @@ class Monguana(MainWindow):
     def _on_tab_close(self, payload) -> None:
         tid = payload.get("id") if isinstance(payload, dict) else payload
         self._discard_view(str(tid))
+        self._discard_dash(str(tid))
 
     def _close_view(self, tid: str) -> None:
         self._discard_view(tid)
@@ -3881,6 +3927,754 @@ class Monguana(MainWindow):
     # Feedback
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Dashboard and query profiler: tabs of their own (``self._dashes``),
+    # routed by their .mg-dash root the way query views are by .mg-view.
+    # ------------------------------------------------------------------
+
+    def _new_tab(self, title: str):
+        self._tab_counter += 1
+        tid = f"v{self._tab_counter}"
+        self.tabs.add_tab(TabConfig(id=tid, title=title, closable=True))
+        cell = self.tabs.get_cell(tid)
+        return tid, cell.getContainer() if hasattr(cell, "getContainer") else cell
+
+    def _find_dash(self, kind: str, conn_id: int, db: str = "") -> str | None:
+        return next((tid for tid, dash in self._dashes.items()
+                     if (dash["kind"], dash["conn"], dash["db"]) == (kind, conn_id, db)), None)
+
+    def _start_poll(self, tid: str) -> None:
+        """Every DASH_POLL_SECONDS, while auto is on and the tab is in front."""
+        def _tick(*_args) -> None:
+            dash = self._dashes.get(tid)
+            if (dash is None or not dash["auto"] or dash["busy"] or js.document.hidden
+                    or self.tabs.get_active() != tid):
+                return
+            refresh = self._dash_refresh(tid) if dash["kind"] == "dashboard" \
+                else self._profiler_rows(tid)
+            _spawn(refresh, f"{dash['kind']} auto refresh")
+
+        dash = self._dashes[tid]
+        dash["tick"] = create_proxy(_tick)
+        dash["timer"] = js.window.setInterval(dash["tick"], DASH_POLL_SECONDS * 1000)
+
+    def _discard_dash(self, tid: str) -> None:
+        dash = self._dashes.pop(tid, None)
+        if dash is None:
+            return
+        js.window.clearInterval(dash.get("timer") or 0)
+        if dash.get("tick") is not None:
+            dash["tick"].destroy()
+        for key in ("dbs_table", "ops_table", "table"):
+            widget = dash.get(key)
+            if widget is not None:
+                try:
+                    widget.destroy()
+                except Exception:  # noqa: BLE001 - already gone with its tab
+                    pass
+
+    def _close_dash(self, tid: str) -> None:
+        self._discard_dash(tid)
+        self.tabs.remove_tab(tid)
+
+    def _dash_status(self, tid: str, message: str = "", kind: str = "error") -> None:
+        box = _el(f"{tid}-status")
+        if box:
+            box.textContent = message
+            box.dataset.kind = kind
+            box.hidden = not message
+
+    def _dash_action(self, tid: str, action: str, button) -> None:
+        dash = self._dashes[tid]
+        if action == "refresh":
+            if dash["kind"] == "dashboard":
+                _spawn(self._dash_refresh(tid, full=True), "dashboard refresh")
+            else:
+                _spawn(self._profiler_load(tid), "profiler refresh")
+        elif action == "level":
+            _spawn(self._profiler_set(tid, int(button.getAttribute("data-level"))), "profiler level")
+        elif action == "apply":
+            _spawn(self._profiler_set(tid, dash["settings"].get("level", 0)), "profiler settings")
+        elif action == "clear":
+            _spawn(self._profiler_clear(tid), "profiler clear")
+        elif action == "show":
+            dash["show"] = str(button.getAttribute("data-show"))
+            for item in js.document.querySelectorAll(f'.mg-dash[data-tab="{tid}"] [data-mg="show"]'):
+                item.setAttribute("aria-pressed",
+                                  "true" if item.getAttribute("data-show") == dash["show"] else "false")
+            dash["table"].set_columns(self._profiler_columns(dash["show"]))
+            _spawn(self._profiler_rows(tid), "profiler view")
+
+    def _dash_change(self, tid: str, target) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None:
+            return
+        role = _role(target)
+        if role == "auto":
+            dash["auto"] = bool(target.checked)
+            if dash["auto"]:
+                refresh = self._dash_refresh(tid) if dash["kind"] == "dashboard" \
+                    else self._profiler_rows(tid)
+                _spawn(refresh, "auto refresh on")
+        elif role in ("p-op", "p-coll", "p-min", "p-limit"):
+            _spawn(self._profiler_rows(tid), "profiler filter")
+
+    # -- the dashboard ------------------------------------------------------
+
+    def _open_dashboard(self, conn_id) -> None:
+        if conn_id is None:
+            self._toast("Select a connection first.")
+            return
+        conn_id = int(conn_id)
+        existing = self._find_dash("dashboard", conn_id)
+        if existing:
+            self.tabs.set_active(existing)
+            return
+        conn = self._conn(conn_id) or {}
+        caps = self._caps(conn_id)
+        tid, container = self._new_tab(f"{conn.get('name', '?')} · dashboard")
+        live = "server_status" in caps
+        container.innerHTML = self._dashboard_html(tid, conn.get("name", "?"), live)
+        dash = {"tid": tid, "kind": "dashboard", "conn": conn_id, "db": "", "caps": caps,
+                "busy": False, "auto": live, "history": [], "status": None}
+        self._dashes[tid] = dash
+        profiler = "profiler" in caps
+        dash["dbs_table"] = DataTable(
+            DataTableConfig(
+                columns=[
+                    ColumnConfig(id="name", header="Database", width=180),
+                    ColumnConfig(id="collections_t", header="Collections", width=100,
+                                 align="right", sort_by="collections"),
+                    ColumnConfig(id="objects_t", header="Documents", width=110, align="right",
+                                 sort_by="objects"),
+                    ColumnConfig(id="data_t", header="Data", width=95, align="right",
+                                 sort_by="data_size"),
+                    ColumnConfig(id="storage_t", header="Storage", width=95, align="right",
+                                 sort_by="storage_size"),
+                    ColumnConfig(id="indexes_t", header="Indexes", width=80, align="right",
+                                 sort_by="indexes"),
+                    ColumnConfig(id="index_t", header="Index size", width=95, align="right",
+                                 sort_by="index_size"),
+                    ColumnConfig(id="disk_t", header="On disk", width=95, align="right",
+                                 sort_by="size_on_disk"),
+                    *([ColumnConfig(id="profiler_t", header="Profiler", width=150,
+                                    icon_by="profiler_icon")] if profiler else []),
+                ],
+                id_field="name",
+                selection="single",
+                empty_text="Loading…",
+                context_actions=[
+                    *([TableAction("profiler", "Query profiler", "mdi-speedometer"),
+                       TableAction(separator=True),
+                       TableAction("prof_1", "Profile slow operations", "mdi-record-circle-outline"),
+                       TableAction("prof_2", "Profile every operation", "mdi-record-circle"),
+                       TableAction("prof_0", "Profiler off", "mdi-stop-circle-outline"),
+                       TableAction(separator=True)] if profiler else []),
+                    TableAction("refresh", "Refresh", "mdi-refresh"),
+                ],
+            ),
+            container=_el(f"{tid}-dbs"),
+        )
+        dash["dbs_table"].on_action(lambda payload: self._dash_db_action(tid, payload))
+        if profiler:
+            dash["dbs_table"].on_activate(
+                lambda payload: self._open_profiler(conn_id, str(payload.get("id") or "")))
+        if live:
+            dash["ops_table"] = DataTable(
+                DataTableConfig(
+                    columns=[
+                        ColumnConfig(id="secs_t", header="Running", width=85, align="right",
+                                     sort_by="secs"),
+                        ColumnConfig(id="op", header="Op", width=85),
+                        ColumnConfig(id="ns", header="Namespace", width=200),
+                        ColumnConfig(id="plan", header="Plan", width=200),
+                        ColumnConfig(id="app", header="App", width=130),
+                        ColumnConfig(id="client", header="Client", width=160),
+                        ColumnConfig(id="opid", header="opid", width=90),
+                        ColumnConfig(id="query", header="Command", width=520),
+                    ],
+                    id_field="opid",
+                    selection="single",
+                    empty_text="Loading…",
+                ),
+                container=_el(f"{tid}-ops"),
+            )
+            self._start_poll(tid)
+        self.tabs.set_active(tid)
+        _spawn(self._dash_refresh(tid, full=True), "dashboard")
+
+    @staticmethod
+    def _dashboard_html(tid: str, conn_name: str, live: bool) -> str:
+        server = f"""
+    <section class="mg-dash-section">
+      <h3>Server</h3>
+      <div class="mg-tiles" id="{tid}-tiles"><div class="mg-hint">Loading…</div></div>
+    </section>
+    <section class="mg-dash-section">
+      <h3>Throughput <small>per second, last {DASH_HISTORY * DASH_POLL_SECONDS // 60} minutes</small></h3>
+      <div class="mg-tiles" id="{tid}-rates"></div>
+    </section>""" if live else """
+    <div class="mg-hint">This backend reports no server status: databases only.</div>"""
+        ops = f"""
+    <section class="mg-dash-section">
+      <h3>Running operations <small id="{tid}-ops-note"></small></h3>
+      <div class="mg-dash-table" id="{tid}-ops"></div>
+    </section>""" if live else ""
+        auto = f"""
+    <label class="mg-check mg-check-inline"><input type="checkbox" data-role="auto" checked>
+      Auto-refresh every {DASH_POLL_SECONDS} s</label>""" if live else ""
+        return f"""
+<div class="mg-dash" data-tab="{tid}">
+  <div class="mg-head">
+    <span class="mdi mdi-server"></span><span>{_esc(conn_name)}</span>
+    <span class="mg-head-sep">›</span>
+    <span class="mdi mdi-view-dashboard-outline"></span><strong>Dashboard</strong>
+    <span class="mg-head-stats" id="{tid}-meta"></span>
+  </div>
+  <div class="mg-bar">
+    <button type="button" class="mg-btn" data-mg="refresh" title="Refresh everything, databases included">
+      <span class="mdi mdi-refresh"></span><span>Refresh</span></button>{auto}
+    <span class="mg-bar-spacer"></span>
+    <span class="mg-summary" id="{tid}-updated"></span>
+  </div>
+  <div class="mg-status" id="{tid}-status" hidden></div>
+  <div class="mg-dash-body">{server}
+    <section class="mg-dash-section">
+      <h3>Databases <small>double-click one for its query profiler; right-click to switch profiling</small></h3>
+      <div class="mg-dash-table" id="{tid}-dbs"></div>
+    </section>{ops}
+  </div>
+</div>"""
+
+    async def _dash_refresh(self, tid: str, full: bool = False) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None or dash["busy"]:
+            return
+        dash["busy"] = True
+        try:
+            if "server_status" in dash["caps"]:
+                result = await MongoService().server_status_async(dash["conn"])
+                if tid not in self._dashes:
+                    return
+                if not result.get("ok"):
+                    self._dash_status(tid, result.get("error", "Could not read the server status"))
+                else:
+                    self._dash_status(tid)
+                    self._render_server(tid, result.get("status"), result.get("status_error", ""))
+                    self._render_ops(tid, result.get("ops"), result.get("ops_error", ""))
+            if full:
+                await self._dash_databases(tid)
+            label = _el(f"{tid}-updated")
+            if label:
+                label.textContent = f"Updated {js.Date.new().toLocaleTimeString()}"
+        finally:
+            dash["busy"] = False
+
+    def _render_server(self, tid: str, status: dict | None, error: str) -> None:
+        dash = self._dashes[tid]
+        tiles, rates = _el(f"{tid}-tiles"), _el(f"{tid}-rates")
+        if not status:
+            tiles.innerHTML = (f'<div class="mg-hint">No server status: {_esc(error)}<br>'
+                               "It needs the clusterMonitor role.</div>")
+            rates.innerHTML = ""
+            return
+        history = dash["history"]
+        uptime = status.get("uptime_ms") or 0
+        if history and uptime < history[-1]["uptime"]:
+            history.clear()  # the server restarted; its counters did too
+        counters = {**status["opcounters"], **status["network"]}
+        if not history or uptime > history[-1]["uptime"]:
+            sample = {"uptime": uptime, "counters": counters, "rates": {},
+                      "time": str(js.Date.new().toLocaleTimeString())}
+            if history:
+                previous = history[-1]
+                seconds = (uptime - previous["uptime"]) / 1000
+                sample["rates"] = {
+                    key: max(0, value - previous["counters"][key]) / seconds
+                    for key, value in counters.items()
+                    if value is not None and previous["counters"].get(key) is not None
+                }
+            history.append(sample)
+            del history[:-DASH_HISTORY]
+
+        meta = _el(f"{tid}-meta")
+        if meta:
+            meta.textContent = " · ".join(part for part in (
+                f"MongoDB {status.get('version', '')}", status.get("host", ""),
+                status.get("process", ""), status.get("engine", "")) if part)
+        conns, mem, cache = status["connections"], status["mem"], status.get("cache")
+        active, queued = status["active"], status["queued"]
+
+        def num(value) -> str:
+            return "—" if value is None else f"{value:,}"
+
+        def megabytes(value) -> str:
+            return "—" if value is None else format_bytes(value * 1024 * 1024)
+
+        parts = [
+            _tile("Uptime", _duration(uptime), f"since {_ago_label(uptime)}"),
+            _tile("Connections", num(conns.get("current")),
+                  f"{num(conns.get('active'))} active · {num(conns.get('available'))} available"),
+            _tile("Clients working", f"{num(active.get('readers'))} r · {num(active.get('writers'))} w",
+                  f"queued {num(queued.get('readers'))} r · {num(queued.get('writers'))} w"),
+            _tile("Memory, resident", megabytes(mem.get("resident")),
+                  f"virtual {megabytes(mem.get('virtual'))}"),
+        ]
+        if cache and cache.get("max"):
+            share = (cache.get("used") or 0) / cache["max"]
+            parts.append(_tile(
+                "WiredTiger cache", format_bytes(cache.get("used")),
+                f"{share:.0%} of {format_bytes(cache['max'])} · dirty {format_bytes(cache.get('dirty'))}",
+                meter=share))
+        tiles.innerHTML = "".join(parts)
+
+        latest = history[-1]["rates"]
+        cells = []
+        for key, label, is_bytes in _RATE_TILES:
+            points = [(sample["rates"][key], sample["time"]) for sample in history
+                      if key in sample["rates"]]
+            text = _rate_text(latest.get(key), is_bytes)
+            cells.append(_tile(label, text, "", spark=_sparkline(
+                [value for value, _ in points],
+                [f"{when} · {_rate_text(value, is_bytes)}" for value, when in points],
+                label)))
+        rates.innerHTML = "".join(cells)
+
+    def _render_ops(self, tid: str, ops: list | None, error: str) -> None:
+        dash = self._dashes[tid]
+        table = dash.get("ops_table")
+        if table is None:
+            return
+        note = _el(f"{tid}-ops-note")
+        if ops is None:
+            table.set_empty_text(f"Cannot list operations: {error}")
+            table.set_rows([])
+            if note:
+                note.textContent = ""
+            return
+        table.set_empty_text("Nothing is running.")
+        table.set_rows([{
+            **op,
+            "secs_t": "" if op.get("secs") is None else f"{op['secs']:,.2f} s",
+            "secs": op.get("secs") or 0,
+            "op": op.get("op") + (" (waiting for a lock)" if op.get("waiting") else ""),
+        } for op in ops])
+        if note:
+            note.textContent = f"{len(ops)} active, longest first"
+
+    async def _dash_databases(self, tid: str) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None:
+            return
+        result = await MongoService().database_stats_async(dash["conn"])
+        if tid not in self._dashes:
+            return
+        table = dash["dbs_table"]
+        if not result.get("ok"):
+            table.set_empty_text(result.get("error", "Could not list databases"))
+            table.set_rows([])
+            return
+
+        def num(value) -> str:
+            return "" if value is None else f"{value:,}"
+
+        def size(value) -> str:
+            return "" if value is None else format_bytes(value)
+
+        rows = []
+        for row in result["databases"]:
+            level = row.get("profile_level")
+            rows.append({
+                "name": row["name"],
+                "collections": row.get("collections") or 0, "collections_t": num(row.get("collections")),
+                "objects": row.get("objects") or 0, "objects_t": num(row.get("objects")),
+                "data_size": row.get("data_size") or 0, "data_t": size(row.get("data_size")),
+                "storage_size": row.get("storage_size") or 0, "storage_t": size(row.get("storage_size")),
+                "indexes": row.get("indexes") or 0, "indexes_t": num(row.get("indexes")),
+                "index_size": row.get("index_size") or 0, "index_t": size(row.get("index_size")),
+                "size_on_disk": row.get("size_on_disk") or 0, "disk_t": size(row.get("size_on_disk")),
+                "profiler_t": row.get("error") and "no access" or _PROFILE_LEVELS.get(level, "—"),
+                "profiler_icon": "mdi-record-circle" if level else "mdi-circle-outline",
+                "profiler_icon_title": row.get("error") or (
+                    "Profiling" if level else "Not profiling"),
+            })
+        table.set_empty_text("No databases.")
+        table.set_rows(rows)
+        if result.get("truncated"):
+            self._dash_status(tid, f"Statistics for the first {len(rows)} databases only.", "info")
+
+    def _dash_db_action(self, tid: str, payload: dict) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None:
+            return
+        db = str(payload.get("id") or "")
+        action = str(payload.get("action") or "")
+        if action == "refresh":
+            _spawn(self._dash_databases(tid), "databases")
+        elif action == "profiler" and db:
+            self._open_profiler(dash["conn"], db)
+        elif action.startswith("prof_") and db:
+            async def _set() -> None:
+                result = await MongoService().set_profiler_async(dash["conn"], db, int(action[-1]))
+                if not result.get("ok"):
+                    self._toast(result.get("error", "Could not change the profiler"))
+                    return
+                self._toast(f"{db}: {_profile_sentence(result)}")
+                await self._after_profiler_change(dash["conn"], db, result)
+
+            _spawn(_set(), "profiler level")
+
+    async def _after_profiler_change(self, conn_id: int, db: str, settings: dict) -> None:
+        """Every dashboard and profiler tab on this server shows the new state."""
+        profiler = self._find_dash("profiler", conn_id, db)
+        if profiler:
+            self._profiler_settings(profiler, settings)
+        for tid in [tid for tid, dash in self._dashes.items()
+                    if dash["kind"] == "dashboard" and dash["conn"] == conn_id]:
+            await self._dash_databases(tid)
+
+    # -- the query profiler -------------------------------------------------
+
+    def _open_profiler(self, conn_id, db: str) -> None:
+        if not db:
+            return
+        conn_id = int(conn_id)
+        existing = self._find_dash("profiler", conn_id, db)
+        if existing:
+            self.tabs.set_active(existing)
+            return
+        if "profiler" not in self._caps(conn_id):
+            self._toast("This connection's backend has no query profiler.")
+            return
+        conn = self._conn(conn_id) or {}
+        tid, container = self._new_tab(f"{db} · profiler")
+        colls = [row["name"] for row in self._colls.get((conn_id, db)) or []]
+        container.innerHTML = self._profiler_html(tid, conn.get("name", "?"), db, colls)
+        dash = {"tid": tid, "kind": "profiler", "conn": conn_id, "db": db,
+                "caps": self._caps(conn_id), "busy": False, "auto": False,
+                "show": "shapes", "rows": [], "settings": {}}
+        self._dashes[tid] = dash
+        dash["table"] = DataTable(
+            DataTableConfig(
+                columns=self._profiler_columns("shapes"),
+                id_field="rid",
+                selection="single",
+                empty_text="Loading…",
+                context_actions=[
+                    TableAction("details", "Details…", "mdi-text-box-search-outline"),
+                    TableAction("open_query", "Open in a query tab", "mdi-tab-plus"),
+                ],
+            ),
+            container=_el(f"{tid}-table"),
+        )
+        dash["table"].on_activate(lambda payload: self._profiler_details(tid, str(payload.get("id"))))
+        dash["table"].on_action(lambda payload: self._profiler_row_action(tid, payload))
+        self._start_poll(tid)
+        self.tabs.set_active(tid)
+        _spawn(self._profiler_load(tid), "profiler")
+
+    @staticmethod
+    def _profiler_html(tid: str, conn_name: str, db: str, colls: list) -> str:
+        ops = '<option value="">All operations</option>' + "".join(
+            f'<option value="{op}">{op}</option>' for op in _PROFILE_OPS)
+        names = "".join(f'<option value="{_esc(name)}"></option>' for name in colls)
+        return f"""
+<div class="mg-dash" data-tab="{tid}">
+  <div class="mg-head">
+    <span class="mdi mdi-server"></span><span>{_esc(conn_name)}</span>
+    <span class="mg-head-sep">›</span>
+    <span class="mdi mdi-database"></span><span>{_esc(db)}</span>
+    <span class="mg-head-sep">›</span>
+    <span class="mdi mdi-speedometer"></span><strong>Query profiler</strong>
+    <span class="mg-head-stats" id="{tid}-pstate"></span>
+  </div>
+  <div class="mg-bar mg-prof-settings">
+    <span class="mg-bar-label">Profiling</span>
+    <span class="mg-seg" role="group" aria-label="Profiling level">
+      <button type="button" class="mg-seg-btn mg-seg-text" data-mg="level" data-level="0"
+        aria-pressed="false" title="Record nothing">Off</button>
+      <button type="button" class="mg-seg-btn mg-seg-text" data-mg="level" data-level="1"
+        aria-pressed="false" title="Record operations slower than the threshold">Slow only</button>
+      <button type="button" class="mg-seg-btn mg-seg-text" data-mg="level" data-level="2"
+        aria-pressed="false" title="Record every operation. This costs the server; turn it off when done.">All</button>
+    </span>
+    <label class="mg-check mg-check-inline" title="Server-wide: also what the server log calls slow">
+      slower than <input class="mg-input mg-num" type="number" min="0" step="10" id="{tid}-slowms"> ms</label>
+    <label class="mg-check mg-check-inline" title="Server-wide: the share of slow operations recorded">
+      sample <input class="mg-input mg-num" type="number" min="0.01" max="1" step="0.05" id="{tid}-rate"></label>
+    <button type="button" class="mg-btn" data-mg="apply" title="Apply the threshold and sample rate">
+      <span class="mdi mdi-check"></span><span>Apply</span></button>
+    <span class="mg-bar-spacer"></span>
+    <button type="button" class="mg-btn" data-mg="clear" title="Delete everything recorded so far">
+      <span class="mdi mdi-delete-sweep-outline"></span><span>Clear</span></button>
+  </div>
+  <div class="mg-bar">
+    <span class="mg-seg" role="group" aria-label="Show">
+      <button type="button" class="mg-seg-btn mg-seg-text" data-mg="show" data-show="shapes"
+        aria-pressed="true" title="Grouped by query shape, most total time first">By query shape</button>
+      <button type="button" class="mg-seg-btn mg-seg-text" data-mg="show" data-show="recent"
+        aria-pressed="false" title="Each recorded operation, newest first">Recent</button>
+    </span>
+    <input class="mg-input mg-prof-coll" data-role="p-coll" list="{tid}-colls" placeholder="All collections"
+      spellcheck="false" autocomplete="off">
+    <datalist id="{tid}-colls">{names}</datalist>
+    <select class="mg-select" data-role="p-op">{ops}</select>
+    <label class="mg-check mg-check-inline">at least
+      <input class="mg-input mg-num" type="number" min="0" step="10" data-role="p-min" value="0"> ms</label>
+    <select class="mg-select" data-role="p-limit" title="How many recent operations">
+      <option value="100">100</option><option value="250">250</option><option value="500">500</option></select>
+    <button type="button" class="mg-btn" data-mg="refresh"><span class="mdi mdi-refresh"></span><span>Refresh</span></button>
+    <label class="mg-check mg-check-inline"><input type="checkbox" data-role="auto">
+      Auto-refresh</label>
+    <span class="mg-bar-spacer"></span>
+    <span class="mg-summary" id="{tid}-summary"></span>
+  </div>
+  <div class="mg-status" id="{tid}-status" hidden></div>
+  <div class="mg-results"><div class="mg-panel" id="{tid}-table"></div></div>
+</div>"""
+
+    @staticmethod
+    def _profiler_columns(show: str) -> list:
+        plan = ColumnConfig(id="plan", header="Plan", width=230, icon_by="plan_icon")
+        query = ColumnConfig(id="query", header="Query", width=480)
+        if show == "recent":
+            return [
+                ColumnConfig(id="ts_t", header="Time", width=100, sort_by="ts"),
+                ColumnConfig(id="op", header="Op", width=80),
+                ColumnConfig(id="coll", header="Collection", width=150),
+                ColumnConfig(id="millis_t", header="ms", width=70, align="right", sort_by="millis"),
+                plan,
+                ColumnConfig(id="docs_t", header="Docs examined", width=115, align="right",
+                             sort_by="docs_examined"),
+                ColumnConfig(id="keys_t", header="Keys examined", width=115, align="right",
+                             sort_by="keys_examined"),
+                ColumnConfig(id="returned_t", header="Returned", width=85, align="right",
+                             sort_by="returned"),
+                ColumnConfig(id="affected_t", header="Changed", width=80, align="right",
+                             sort_by="affected"),
+                ColumnConfig(id="app", header="App", width=120),
+                query,
+            ]
+        return [
+            ColumnConfig(id="coll", header="Collection", width=150),
+            ColumnConfig(id="op", header="Op", width=80),
+            ColumnConfig(id="count_t", header="Count", width=70, align="right", sort_by="count"),
+            ColumnConfig(id="avg_t", header="Avg ms", width=75, align="right", sort_by="avg_ms"),
+            ColumnConfig(id="max_t", header="Max ms", width=75, align="right", sort_by="max_ms"),
+            ColumnConfig(id="total_t", header="Total ms", width=85, align="right", sort_by="total_ms"),
+            ColumnConfig(id="ratio_t", header="Examined : returned", width=140, align="right",
+                         sort_by="ratio"),
+            plan,
+            query,
+        ]
+
+    def _profiler_values(self, tid: str) -> dict:
+        root = js.document.querySelector(f'.mg-dash[data-tab="{tid}"]')
+
+        def value(role: str) -> str:
+            element = root.querySelector(f'[data-role="{role}"]')
+            return str(element.value).strip() if element else ""
+
+        try:
+            min_ms = max(0, int(value("p-min") or 0))
+        except ValueError:
+            min_ms = 0
+        return {"coll": value("p-coll"), "op": value("p-op"), "min_ms": min_ms,
+                "limit": int(value("p-limit") or 100)}
+
+    async def _profiler_load(self, tid: str) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None:
+            return
+        result = await MongoService().profiler_status_async(dash["conn"], dash["db"])
+        if tid not in self._dashes:
+            return
+        if not result.get("ok"):
+            self._dash_status(tid, result.get("error", "Could not read the profiler"))
+            return
+        self._profiler_settings(tid, result)
+        await self._profiler_rows(tid)
+
+    def _profiler_settings(self, tid: str, settings: dict) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None:
+            return
+        dash["settings"] = settings
+        level = settings.get("level", 0)
+        for button in js.document.querySelectorAll(f'.mg-dash[data-tab="{tid}"] [data-mg="level"]'):
+            button.setAttribute("aria-pressed",
+                                "true" if button.getAttribute("data-level") == str(level) else "false")
+        _el(f"{tid}-slowms").value = str(settings.get("slowms", 100))
+        _el(f"{tid}-rate").value = str(settings.get("sample_rate", 1.0))
+        state = _el(f"{tid}-pstate")
+        if state:
+            state.textContent = f"{_profile_sentence(settings)} · {settings.get('entries', 0):,} recorded"
+            state.dataset.on = "true" if level else "false"
+        if settings.get("filter"):
+            self._dash_status(tid, "The server also has a profile filter, which decides what is "
+                                   f"recorded: {compact(settings['filter'], 300)}", "info")
+
+    async def _profiler_set(self, tid: str, level: int) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None:
+            return
+        try:
+            slowms = int(str(_el(f"{tid}-slowms").value).strip() or 100)
+            rate = float(str(_el(f"{tid}-rate").value).strip() or 1)
+        except ValueError:
+            self._dash_status(tid, "The threshold and the sample rate must be numbers.")
+            return
+        result = await MongoService().set_profiler_async(dash["conn"], dash["db"], level, slowms, rate)
+        if not result.get("ok"):
+            self._dash_status(tid, result.get("error", "Could not change the profiler"))
+            return
+        self._dash_status(tid)
+        if level == 2:
+            self._toast("Recording every operation slows the server. Turn it off when done.")
+        await self._after_profiler_change(dash["conn"], dash["db"], result)
+        await self._profiler_rows(tid)
+
+    async def _profiler_clear(self, tid: str) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None or not js.confirm(
+                f"Delete everything the profiler recorded in {dash['db']}?"):
+            return
+        result = await MongoService().profiler_clear_async(dash["conn"], dash["db"])
+        if not result.get("ok"):
+            self._dash_status(tid, result.get("error", "Could not clear"))
+            return
+        self._profiler_settings(tid, result)
+        await self._profiler_rows(tid)
+
+    async def _profiler_rows(self, tid: str) -> None:
+        dash = self._dashes.get(tid)
+        if dash is None or dash["busy"]:
+            return
+        dash["busy"] = True
+        try:
+            values = self._profiler_values(tid)
+            service = MongoService()
+            show = dash["show"]
+            if show == "recent":
+                result = await service.profiler_entries_async(
+                    dash["conn"], dash["db"], values["limit"], values["min_ms"], values["op"],
+                    values["coll"])
+                rows = result.get("entries") or []
+            else:
+                result = await service.profiler_summary_async(
+                    dash["conn"], dash["db"], values["min_ms"], values["op"], values["coll"])
+                rows = result.get("groups") or []
+            if tid not in self._dashes or dash["show"] != show:
+                return
+            table = dash["table"]
+            if not result.get("ok"):
+                self._dash_status(tid, result.get("error", "Could not read the profile"))
+                table.set_rows([])
+                return
+            dash["rows"] = rows
+            table.set_empty_text(
+                "Nothing recorded yet." if dash["settings"].get("level")
+                else "Nothing recorded. Turn profiling on above, then use the database.")
+            table.set_rows([_profile_row(index, row, show) for index, row in enumerate(rows)])
+            summary = _el(f"{tid}-summary")
+            if summary:
+                noun = "operation" if show == "recent" else "query shape"
+                summary.textContent = f"{len(rows):,} {noun}{'' if len(rows) == 1 else 's'}"
+        finally:
+            dash["busy"] = False
+
+    def _profiler_row_action(self, tid: str, payload: dict) -> None:
+        action = payload.get("action")
+        rid = str(payload.get("id"))
+        if action == "details":
+            self._profiler_details(tid, rid)
+        elif action == "open_query":
+            self._open_profiled(tid, rid)
+
+    def _profiled_row(self, tid: str, rid: str) -> dict | None:
+        dash = self._dashes.get(tid)
+        try:
+            return dash["rows"][int(rid)] if dash else None
+        except (ValueError, IndexError):
+            return None
+
+    def _open_profiled(self, tid: str, rid: str) -> None:
+        """Re-run a profiled find or aggregate in a query tab, Explain at hand."""
+        dash, row = self._dashes.get(tid), self._profiled_row(tid, rid)
+        spec = (row or {}).get("open")
+        if not spec:
+            self._toast("Only a find or an aggregate can be opened in a query tab.")
+            return
+        known = {item["name"]: item for item in self._colls.get((dash["conn"], dash["db"])) or []}
+        kind = "view" if (known.get(spec["coll"]) or {}).get("type") == "view" else "collection"
+        view = self._open_view(dash["conn"], dash["db"], spec["coll"], kind)
+        # _open_view's first query is spawned, so it runs after these land.
+        if spec["mode"] == "aggregate":
+            self._set_text(f"{view}-pipeline", spec["pipeline"])
+            _el(f"{view}-mode").value = "aggregate"
+            self._apply_mode(view, "aggregate")
+        else:
+            for role in ("filter", "sort", "projection"):
+                if spec.get(role):
+                    self._set_text(f"{view}-{role}", spec[role])
+
+    def _profiler_details(self, tid: str, rid: str) -> None:
+        row = self._profiled_row(tid, rid)
+        if row is None:
+            return
+        shape = "count" in row
+
+        def num(key: str) -> str:
+            return "—" if row.get(key) is None else f"{row[key]:,}"
+
+        if shape:
+            facts = [("Namespace", row["ns"]), ("Operation", row["op"]),
+                     ("Times recorded", num("count")), ("Average", f"{row['avg_ms']:,} ms"),
+                     ("Slowest", f"{row['max_ms']:,} ms"), ("Total", f"{row['total_ms']:,} ms"),
+                     ("Docs examined", num("docs_examined")), ("Keys examined", num("keys_examined")),
+                     ("Returned", num("returned")), ("Plan (latest)", row.get("plan") or "—"),
+                     ("Query shape hash", row.get("shape") or "—"),
+                     ("Latest", _local_time(row.get("last_ts", "")))]
+        else:
+            facts = [("Time", _local_time(row["ts"])), ("Namespace", row["ns"]), ("Operation", row["op"]),
+                     ("Duration", f"{row['millis']:,} ms"), ("Plan", row.get("plan") or "—"),
+                     ("Docs examined", num("docs_examined")), ("Keys examined", num("keys_examined")),
+                     ("Returned", num("returned")), ("Changed", num("affected")),
+                     ("Response", format_bytes(row.get("response_length") or 0)),
+                     ("App", row.get("app") or "—"), ("Client", row.get("client") or "—"),
+                     ("User", row.get("user") or "—"), ("Query shape hash", row.get("shape") or "—")]
+            if row.get("error"):
+                facts.append(("Error", row["error"]))
+        advice = _profile_advice(row)
+        modal = ModalWindow(ModalConfig(dispose_on_close=True, title=f"{row['ns']} · {row['op']}",
+                                        width=780, height=640))
+        modal.body.innerHTML = (
+            '<div class="mg-editor">'
+            + (f'<div class="mg-warn">{_esc(advice)}</div>' if advice else "")
+            + '<div class="mg-facts">' + "".join(
+                f"<div><span>{_esc(label)}</span><b>{_esc(value)}</b></div>" for label, value in facts)
+            + "</div>"
+            + f'<pre class="mg-json mg-prof-command">{_esc(to_pretty(row.get("command") or {}))}</pre>'
+            + '<div class="mg-editor-actions">'
+            + ('<button type="button" class="mg-btn mg-primary" data-prof="open">'
+               '<span class="mdi mdi-tab-plus"></span><span>Open in a query tab</span></button>'
+               if row.get("open") else "")
+            + '<button type="button" class="mg-btn" data-prof="close">Close</button></div></div>'
+        )
+
+        def _on_click(event) -> None:
+            button = event.target.closest("[data-prof]") if hasattr(event.target, "closest") else None
+            if not button:
+                return
+            if button.getAttribute("data-prof") == "open":
+                self._open_profiled(tid, rid)
+            modal.close()
+
+        proxy = create_proxy(_on_click)
+        self._proxies.append(proxy)
+        modal.body.addEventListener("click", proxy)
+        modal.show()
+
     def _toast(self, message: str) -> None:
         holder = _el("mg-toast")
         if not holder:
@@ -3894,6 +4688,141 @@ class Monguana(MainWindow):
         self._toast_timer = js.window.setTimeout(
             create_proxy(lambda: holder.removeAttribute("data-visible")), 4000
         )
+
+
+# -- dashboard and profiler: pure helpers ----------------------------------
+
+def _tile(label: str, value: str, sub: str = "", meter: float | None = None,
+          spark: str = "") -> str:
+    """A stat tile: label, headline value, a muted line, and a meter or a sparkline."""
+    bar = ""
+    if meter is not None:
+        width = max(0.0, min(1.0, meter)) * 100
+        bar = f'<div class="mg-meter"><span style="width:{width:.1f}%"></span></div>'
+    return (f'<div class="mg-tile"><div class="mg-tile-label">{_esc(label)}</div>'
+            f'<div class="mg-tile-value">{_esc(value)}</div>'
+            + (f'<div class="mg-tile-sub">{_esc(sub)}</div>' if sub else "")
+            + bar + spark + "</div>")
+
+
+def _sparkline(values: list, labels: list, name: str) -> str:
+    """
+    One series as inline SVG (no chart library: pytincture's CSP allows no
+    CDN). A transparent column per sample carries its tooltip.
+    """
+    if len(values) < 2:
+        return '<div class="mg-spark mg-spark-empty">measuring…</div>'
+    width, height = 120, 32
+    top = max(values) or 1
+    step = width / (len(values) - 1)
+    points = [(i * step, height - 2 - (value / top) * (height - 4)) for i, value in enumerate(values)]
+    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    hits = "".join(
+        f'<rect x="{max(0.0, x - step / 2):.1f}" y="0" width="{step:.1f}" height="{height}">'
+        f"<title>{_esc(label)}</title></rect>"
+        for (x, _y), label in zip(points, labels)
+    )
+    return (f'<svg class="mg-spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none" '
+            f'role="img" aria-label="{_esc(name)}, last {len(values)} samples">'
+            f'<polygon class="mg-spark-area" points="0,{height} {line} {width},{height}"/>'
+            f'<polyline class="mg-spark-line" points="{line}"/>{hits}</svg>')
+
+
+def _rate_text(value, is_bytes: bool) -> str:
+    if value is None:
+        return "—"
+    if is_bytes:
+        return f"{format_bytes(value)}/s"
+    return f"{value:,.1f}/s" if value < 100 else f"{value:,.0f}/s"
+
+
+def _duration(ms) -> str:
+    seconds = int((ms or 0) // 1000)
+    days, seconds = divmod(seconds, 86_400)
+    hours, seconds = divmod(seconds, 3_600)
+    minutes, seconds = divmod(seconds, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m {seconds}s"
+
+
+def _local_time(iso: str) -> str:
+    return str(js.Date.new(iso).toLocaleString()) if iso else "—"
+
+
+def _ago_label(ms) -> str:
+    return str(js.Date.new(js.Date.now() - (ms or 0)).toLocaleString())
+
+
+def _profile_sentence(settings: dict) -> str:
+    level = settings.get("level", 0)
+    if not level:
+        return "Profiling is off"
+    rate = settings.get("sample_rate", 1.0)
+    sampled = f", sampling {rate:.0%}" if rate < 1 else ""
+    if level == 1:
+        return f"Recording operations slower than {settings.get('slowms', 0):,} ms{sampled}"
+    return f"Recording every operation{sampled}"
+
+
+def _plan_icon(row: dict) -> tuple:
+    plan = row.get("plan") or ""
+    if row.get("collscan"):
+        return "mdi-alert", "Collection scan: no index was used"
+    if any(stage in plan for stage in ("IXSCAN", "COUNT_SCAN", "IDHACK", "EXPRESS")):
+        return "mdi-key", "An index was used"
+    return "", ""
+
+
+def _profile_row(index: int, row: dict, show: str) -> dict:
+    """A profiler entry or query-shape group as a table row (``show``)."""
+    ns = row.get("ns") or ""
+    icon, title = _plan_icon(row)
+
+    def num(key: str) -> str:
+        return "" if row.get(key) is None else f"{row[key]:,}"
+
+    cells = {
+        "rid": str(index), "op": row.get("op", ""), "coll": ns.partition(".")[2] or ns,
+        "plan": row.get("plan") or "—", "plan_icon": icon, "plan_icon_title": title,
+        "query": row.get("query", ""),
+    }
+    for key in ("docs_examined", "keys_examined", "returned", "affected"):
+        cells[key] = row.get(key) or 0
+    if show == "recent":
+        cells.update(
+            ts=row.get("ts", ""), ts_t=str(js.Date.new(row.get("ts", "")).toLocaleTimeString()),
+            millis=row.get("millis", 0), millis_t=num("millis"), docs_t=num("docs_examined"),
+            keys_t=num("keys_examined"), returned_t=num("returned"), affected_t=num("affected"),
+            app=row.get("app", ""),
+        )
+        return cells
+    examined, returned = row.get("docs_examined") or 0, row.get("returned") or 0
+    cells.update(
+        count=row.get("count", 0), count_t=num("count"),
+        avg_ms=row.get("avg_ms", 0), avg_t=f"{row.get('avg_ms', 0):,}",
+        max_ms=row.get("max_ms", 0), max_t=num("max_ms"),
+        total_ms=row.get("total_ms", 0), total_t=num("total_ms"),
+        ratio=examined / returned if returned else float(examined),
+        ratio_t=f"{examined:,} : {returned:,}",
+    )
+    return cells
+
+
+def _profile_advice(row: dict) -> str:
+    """One line on what to look at, from what the profiler saw."""
+    examined, returned = row.get("docs_examined") or 0, row.get("returned") or 0
+    if row.get("collscan"):
+        return ("Collection scan: no index served this. An index on the fields it filters "
+                "(and sorts) on would.")
+    if examined >= 1000 and examined > 100 * max(returned, 1):
+        return (f"It examined {examined:,} documents to return {returned:,}. "
+                "A more selective index would read fewer.")
+    if row.get("in_memory_sort"):
+        return "Sorted in memory. An index ending with the sort fields would avoid it."
+    return ""
 
 
 _CSS = """
@@ -3927,9 +4856,9 @@ _CSS = """
   color:var(--mg-dim);font:14px system-ui,sans-serif;text-align:center;padding:0 24px;}
 .wapyt-tabwidget-tabs:empty{display:none;}
 
-.mg-view{display:flex;flex-direction:column;height:100%;min-height:0;
+.mg-view,.mg-dash{display:flex;flex-direction:column;height:100%;min-height:0;
   font:13px system-ui,sans-serif;color:var(--mg-text);container-type:inline-size;}
-.mg-view [hidden]{display:none !important;}
+.mg-view [hidden],.mg-dash [hidden]{display:none !important;}
 /* .mg-btn is display:inline-flex, which beats the hidden attribute: without
    this a "hidden" Cancel stayed on screen after the job finished. */
 .mg-btn[hidden],.mg-console [hidden]{display:none !important;}
@@ -4138,6 +5067,49 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .mg-kv td{color:var(--mg-text);padding:6px 0;font-family:ui-monospace,Menlo,Consolas,monospace;
   word-break:break-word;}
 .mg-kv kbd{padding:2px 6px;border:1px solid var(--mg-line-2);border-radius:4px;background:var(--mg-bg);}
+
+/* Dashboard and query profiler */
+.mg-dash-body{flex:1 1 auto;min-height:0;overflow:auto;padding:12px 14px 18px;
+  display:flex;flex-direction:column;gap:18px;}
+.mg-dash-section h3{display:flex;align-items:baseline;gap:10px;margin:0 0 8px;
+  font:600 11px system-ui,sans-serif;text-transform:uppercase;letter-spacing:.06em;color:var(--mg-muted);}
+.mg-dash-section h3 small{font-weight:400;text-transform:none;letter-spacing:0;color:var(--mg-dim);font-size:11.5px;}
+.mg-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;}
+.mg-tile{display:flex;flex-direction:column;gap:2px;min-width:0;padding:10px 12px;
+  border:1px solid var(--mg-line);border-radius:8px;background:var(--mg-panel);}
+.mg-tile-label{color:var(--mg-muted);font-size:11.5px;}
+.mg-tile-value{font:600 19px/1.25 system-ui,sans-serif;color:var(--mg-text);
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.mg-tile-sub{color:var(--mg-dim);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.mg-meter{height:6px;margin-top:6px;border-radius:3px;background:#1e293b;overflow:hidden;}
+.mg-meter span{display:block;height:100%;border-radius:3px;background:var(--mg-accent);}
+.mg-spark{display:block;width:100%;height:32px;margin-top:6px;overflow:visible;}
+.mg-spark-line{fill:none;stroke:var(--mg-accent);stroke-width:2;stroke-linejoin:round;
+  stroke-linecap:round;vector-effect:non-scaling-stroke;}
+.mg-spark-area{fill:rgba(16,185,129,.12);stroke:none;}
+.mg-spark rect{fill:transparent;}
+.mg-spark rect:hover{fill:rgba(148,163,184,.14);}
+.mg-spark-empty{display:flex;align-items:flex-end;color:var(--mg-dim);font-size:11px;}
+.mg-dash-table{position:relative;height:280px;border:1px solid var(--mg-line);border-radius:6px;overflow:hidden;}
+.mg-dash-table .wapyt-datatable-table{min-width:100%;}
+.mg-check-inline{padding-top:0;margin-left:6px;}
+.mg-bar-label{color:var(--mg-muted);font-size:12px;margin:0 4px 0 2px;}
+.mg-num{width:84px;padding:4px 6px;}
+.mg-prof-coll{width:180px;padding:5px 8px;}
+.mg-prof-settings{background:var(--mg-panel);}
+.mg-prof-settings .mg-seg{margin-right:4px;}
+.mg-head-stats[data-on="true"]{color:#fbbf24;}
+.mg-prof-command{flex:1 1 auto;min-height:100px;margin:0;}
+.mg-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 28px;flex:0 0 auto;}
+.mg-facts div{display:flex;justify-content:space-between;gap:12px;min-width:0;
+  padding-bottom:4px;border-bottom:1px solid var(--mg-line);}
+.mg-facts span{color:var(--mg-muted);font-size:12.5px;white-space:nowrap;}
+.mg-facts b{font:500 12.5px ui-monospace,Menlo,Consolas,monospace;color:var(--mg-text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.wapyt-datatable-cell-icon.mdi-record-circle{color:#f59e0b;}
+.wapyt-datatable-cell-icon.mdi-circle-outline{color:#64748b;}
+.wapyt-datatable-cell-icon.mdi-alert{color:#f87171;}
+.wapyt-datatable-cell-icon.mdi-key{color:#34d399;}
 
 .mg-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(12px);
   padding:10px 18px;border-radius:8px;background:#1e293b;color:var(--mg-text);

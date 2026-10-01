@@ -39,6 +39,11 @@ QUERY_TIME_LIMIT_MS = 30_000
 COUNT_TIME_LIMIT_MS = 5_000
 PREVIEW_DOCS = 20
 SCHEMA_SAMPLE_SIZE = 200
+# The dashboard and the query profiler.
+DASHBOARD_MAX_DATABASES = 100
+MAX_CURRENT_OPS = 50
+MAX_PROFILE_ENTRIES = 500
+MAX_PROFILE_GROUPS = 100
 
 SYSTEM_DATABASES = ("admin", "local", "config")
 
@@ -777,6 +782,212 @@ class MongoService:
 
         return self._guard(work)
 
+    # ------------------------------------------------------------------
+    # Dashboard (server status, databases, running operations)
+    # ------------------------------------------------------------------
+
+    def server_status(self, conn_id: int) -> dict:
+        """
+        What the dashboard polls: a slice of ``serverStatus`` (counters are
+        cumulative; the page turns them into rates) and the running
+        operations. Each half fails on its own — ``serverStatus`` needs
+        ``clusterMonitor``, ``$currentOp`` with ``allUsers`` needs ``inprog``
+        — so a limited account still sees what it may.
+        """
+        def work() -> dict:
+            from pymongo.errors import OperationFailure
+
+            client = self._client(conn_id)
+            self._require("server_status", "report server status")
+            out: dict = {"status": None, "status_error": "", "ops": None, "ops_error": ""}
+            try:
+                # Not "metrics": 0 — on 7.0 that also drops the mem section.
+                raw = client.admin.command({"serverStatus": 1, "repl": 0, "locks": 0})
+                out["status"] = _status_slice(raw)
+            except OperationFailure as exc:
+                out["status_error"] = _error(exc)
+            try:
+                out["ops"] = _current_ops(client)
+            except OperationFailure as exc:
+                out["ops_error"] = _error(exc)
+            return out
+
+        return self._guard(work)
+
+    def database_stats(self, conn_id: int) -> dict:
+        """
+        One row per database: ``dbStats`` and the profiler level where the
+        backend has them, otherwise names, sizes on disk and collection
+        counts. Past ``DASHBOARD_MAX_DATABASES`` the rest are names only.
+        """
+        def work() -> dict:
+            from pymongo.errors import OperationFailure
+
+            client = self._client(conn_id)
+            listed = list(client.list_databases())
+            rows = []
+            for index, info in enumerate(listed):
+                name = info.get("name", "")
+                row = {"name": name, "size_on_disk": _int(info.get("sizeOnDisk")),
+                       "empty": bool(info.get("empty")), "collections": None,
+                       "objects": None, "data_size": None, "storage_size": None,
+                       "indexes": None, "index_size": None, "profile_level": None,
+                       "error": ""}
+                rows.append(row)
+                if index >= DASHBOARD_MAX_DATABASES:
+                    continue
+                try:
+                    if self._can("server_status"):
+                        stats = client[name].command("dbStats")
+                        row.update(collections=_int(stats.get("collections")),
+                                   objects=_int(stats.get("objects")),
+                                   data_size=_int(stats.get("dataSize")),
+                                   storage_size=_int(stats.get("storageSize")),
+                                   indexes=_int(stats.get("indexes")),
+                                   index_size=_int(stats.get("indexSize")))
+                    else:
+                        row["collections"] = len(client[name].list_collection_names())
+                    if self._can("profiler") and name != "local":
+                        row["profile_level"] = _int(client[name].command("profile", -1).get("was"))
+                except OperationFailure as exc:
+                    row["error"] = _error(exc)
+            return {"databases": rows, "truncated": len(listed) > DASHBOARD_MAX_DATABASES}
+
+        return self._guard(work)
+
+    # ------------------------------------------------------------------
+    # Query profiler (per database)
+    # ------------------------------------------------------------------
+
+    def profiler_status(self, conn_id: int, db: str) -> dict:
+        def work() -> dict:
+            _check_db_name(db)
+            client = self._client(conn_id)
+            self._require("profiler", "profile queries")
+            return _profile_settings(client[db])
+
+        return self._guard(work)
+
+    def set_profiler(self, conn_id: int, db: str, level: int, slowms: int = -1,
+                     sample_rate: float = -1.0) -> dict:
+        """
+        Level 0 off, 1 operations slower than ``slowms``, 2 everything.
+        ``slowms`` and ``sampleRate`` are the mongod's, not the database's
+        (they also decide what the server log calls slow); a negative one is
+        left as it is.
+        """
+        def work() -> dict:
+            _check_db_name(db)
+            if int(level) not in (0, 1, 2):
+                raise _Refused("Level must be 0 (off), 1 (slow operations) or 2 (all)")
+            options: dict = {}
+            if int(slowms) >= 0:
+                if int(slowms) > 3_600_000:
+                    raise _Refused("Slow threshold must be between 0 and 3,600,000 ms")
+                options["slowms"] = int(slowms)
+            if float(sample_rate) >= 0:
+                if not 0 < float(sample_rate) <= 1:
+                    raise _Refused("Sample rate must be above 0 and at most 1")
+                options["sampleRate"] = float(sample_rate)
+            if db == "local":
+                raise _Refused("The local database cannot be profiled")
+            client = self._client(conn_id)
+            self._require("profiler", "profile queries")
+            client[db].command("profile", int(level), **options)
+            return _profile_settings(client[db])
+
+        return self._guard(work)
+
+    def profiler_entries(self, conn_id: int, db: str, limit: int = 100, min_ms: int = 0,
+                         op: str = "", coll: str = "") -> dict:
+        """The newest ``system.profile`` entries first, filtered."""
+        def work() -> dict:
+            _check_db_name(db)
+            client = self._client(conn_id)
+            self._require("profiler", "profile queries")
+            query = _profile_query(db, min_ms, op, coll)
+            cap = max(1, min(int(limit), MAX_PROFILE_ENTRIES))
+            cursor = client[db]["system.profile"].find(query, **self._time_limit(
+                QUERY_TIME_LIMIT_MS, "max_time_ms")).sort("$natural", -1).limit(cap)
+            return {"entries": [_profile_entry(doc) for doc in cursor]}
+
+        return self._guard(work)
+
+    def profiler_summary(self, conn_id: int, db: str, min_ms: int = 0, op: str = "",
+                         coll: str = "") -> dict:
+        """
+        Profiled operations grouped by namespace, type and query shape (the
+        plan cache hash, so ``{a: 1}`` and ``{a: 2}`` are one row): how often,
+        how slow, and how much was read for what was returned.
+        """
+        def work() -> dict:
+            _check_db_name(db)
+            client = self._client(conn_id)
+            self._require("profiler", "profile queries")
+            pipeline = [
+                {"$match": _profile_query(db, min_ms, op, coll)},
+                {"$sort": {"ts": 1}},
+                {"$group": {
+                    "_id": {"ns": "$ns", "op": "$op",
+                            "shape": {"$ifNull": ["$planCacheShapeHash", "$queryHash"]}},
+                    "count": {"$sum": 1},
+                    "total_ms": {"$sum": "$millis"},
+                    "max_ms": {"$max": "$millis"},
+                    "docs_examined": {"$sum": {"$ifNull": ["$docsExamined", 0]}},
+                    "keys_examined": {"$sum": {"$ifNull": ["$keysExamined", 0]}},
+                    "returned": {"$sum": {"$ifNull": ["$nreturned", 0]}},
+                    "last": {"$last": "$$ROOT"},
+                }},
+                {"$sort": {"total_ms": -1}},
+                {"$limit": MAX_PROFILE_GROUPS},
+            ]
+            groups = []
+            for row in client[db]["system.profile"].aggregate(pipeline, **self._time_limit(
+                    QUERY_TIME_LIMIT_MS)):
+                last = _profile_entry(row["last"])
+                count = int(row["count"])
+                groups.append({
+                    "ns": row["_id"].get("ns") or "", "op": row["_id"].get("op") or "",
+                    "shape": row["_id"].get("shape") or "",
+                    "count": count, "total_ms": _int(row["total_ms"]),
+                    "avg_ms": round(_int(row["total_ms"]) / count, 1) if count else 0,
+                    "max_ms": _int(row["max_ms"]),
+                    "docs_examined": _int(row["docs_examined"]),
+                    "keys_examined": _int(row["keys_examined"]),
+                    "returned": _int(row["returned"]),
+                    "plan": last["plan"], "collscan": last["collscan"],
+                    "in_memory_sort": last["in_memory_sort"],
+                    "query": last["query"], "command": last["command"], "open": last["open"],
+                    "last_ts": last["ts"],
+                })
+            return {"groups": groups}
+
+        return self._guard(work)
+
+    def profiler_clear(self, conn_id: int, db: str) -> dict:
+        """
+        Empty ``system.profile``. It can only be dropped while profiling is
+        off, so profiling is switched off, the collection dropped, and the
+        level it had put back.
+        """
+        def work() -> dict:
+            _check_db_name(db)
+            client = self._client(conn_id)
+            self._require("profiler", "profile queries")
+            database = client[db]
+            before = _profile_settings(database)
+            if before["level"]:
+                database.command("profile", 0)
+            try:
+                database.drop_collection("system.profile")
+            finally:
+                if before["level"]:
+                    database.command("profile", before["level"], slowms=before["slowms"],
+                                     sampleRate=before["sample_rate"])
+            return _profile_settings(database)
+
+        return self._guard(work)
+
     def _check_index_options(self, index_options: dict) -> None:
         if "expireAfterSeconds" in index_options:
             self._require("ttl_indexes", "create TTL indexes")
@@ -1081,3 +1292,182 @@ def _plan_summary(stage: dict) -> str:
         current = current.get("inputStage") or (current.get("inputStages") or [None])[0] \
             or current.get("queryPlan")
     return " ← ".join(parts) or "?"
+
+
+# -- dashboard and profiler helpers ------------------------------------
+
+# Profiler entry types (system.profile's "op"), for the filter.
+PROFILE_OPS = ("query", "getmore", "insert", "update", "remove", "command")
+
+# Command fields that are routing or session noise, not the query.
+_COMMAND_NOISE = ("lsid", "$db", "$clusterTime", "$readPreference", "txnNumber",
+                  "autocommit", "$audit", "$client", "apiVersion", "mayBypassWriteBlocking")
+
+
+def _int(value: Any) -> int | None:
+    """An Int64, a float or a number in a string as an int; None stays None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _status_slice(raw: dict) -> dict:
+    """What the dashboard shows of ``serverStatus``. Every number an int."""
+    def pick(section: Any, *keys: str) -> dict:
+        section = section if isinstance(section, dict) else {}
+        return {key: _int(section.get(key)) for key in keys}
+
+    cache = (raw.get("wiredTiger") or {}).get("cache") or {}
+    lock = raw.get("globalLock") or {}
+    return {
+        "host": raw.get("host", ""),
+        "version": raw.get("version", ""),
+        "process": raw.get("process", ""),
+        "engine": (raw.get("storageEngine") or {}).get("name", ""),
+        "uptime_ms": _int(raw.get("uptimeMillis")),
+        "connections": pick(raw.get("connections"), "current", "available", "totalCreated",
+                            "active"),
+        "opcounters": pick(raw.get("opcounters"), "insert", "query", "update", "delete",
+                           "getmore", "command"),
+        "network": pick(raw.get("network"), "bytesIn", "bytesOut", "numRequests"),
+        "mem": pick(raw.get("mem"), "resident", "virtual"),
+        "cache": {
+            "used": _int(cache.get("bytes currently in the cache")),
+            "max": _int(cache.get("maximum bytes configured")),
+            "dirty": _int(cache.get("tracked dirty bytes in the cache")),
+        } if cache else None,
+        "active": pick(lock.get("activeClients"), "readers", "writers"),
+        "queued": pick(lock.get("currentQueue"), "readers", "writers"),
+    }
+
+
+def _query_part(command: dict) -> Any:
+    """The part of a command that says what it looked for, for a one-line summary."""
+    for key in ("filter", "pipeline", "q", "query"):
+        if key in command:
+            return command[key]
+    updates = command.get("updates") or command.get("deletes")
+    if isinstance(updates, list) and updates and isinstance(updates[0], dict):
+        return updates[0].get("q", updates[0])
+    return {key: value for key, value in command.items() if key not in _COMMAND_NOISE}
+
+
+def _current_ops(client) -> list:
+    pipeline = [
+        {"$currentOp": {"allUsers": True, "idleConnections": False, "idleSessions": False}},
+        {"$match": {"active": True}},
+        {"$sort": {"microsecs_running": -1}},
+        {"$limit": MAX_CURRENT_OPS + 1},
+    ]
+    from services import mql
+    from services.docfmt import compact
+
+    rows = []
+    for op in client.admin.aggregate(pipeline):
+        command = op.get("command") or {}
+        stages = command.get("pipeline")
+        if isinstance(stages, list) and stages and isinstance(stages[0], dict) \
+                and "$currentOp" in stages[0]:
+            continue  # this very call
+        micros = _int(op.get("microsecs_running"))
+        rows.append({
+            "opid": str(op.get("opid", "")),
+            "op": op.get("op", ""),
+            "ns": op.get("ns", ""),
+            "secs": round(micros / 1e6, 2) if micros is not None else _int(op.get("secs_running")),
+            "client": op.get("client") or op.get("client_s") or "",
+            "app": op.get("appName", ""),
+            "desc": op.get("desc", ""),
+            "plan": op.get("planSummary", ""),
+            "waiting": bool(op.get("waitingForLock")),
+            "query": compact(mql.to_display(_query_part(command)), 300) if command else "",
+        })
+    return rows[:MAX_CURRENT_OPS]
+
+
+def _profile_settings(database) -> dict:
+    from services import mql
+
+    info = database.command("profile", -1)
+    return {
+        "level": _int(info.get("was")) or 0,
+        "slowms": _int(info.get("slowms")) or 0,
+        "sample_rate": float(info.get("sampleRate", 1.0)),
+        "filter": mql.to_display(info["filter"]) if info.get("filter") else None,
+        "entries": database["system.profile"].estimated_document_count()
+        if "system.profile" in database.list_collection_names(filter={"name": "system.profile"})
+        else 0,
+    }
+
+
+def _profile_query(db: str, min_ms: Any, op: str, coll: str) -> dict:
+    query: dict = {}
+    if _int(min_ms):
+        query["millis"] = {"$gte": _int(min_ms)}
+    if op:
+        if op not in PROFILE_OPS:
+            raise _Refused(f"Unknown operation type {op!r}")
+        query["op"] = op
+    if coll:
+        _check_collection_name(coll)
+        query["ns"] = f"{db}.{coll}"
+    else:
+        # Reading the profile is profiled too (at level 2); that is
+        # Monguana looking, not the application.
+        query["ns"] = {"$ne": f"{db}.system.profile"}
+    return query
+
+
+def _profile_entry(doc: dict) -> dict:
+    """One ``system.profile`` document as a row, plus how to re-run it in a tab."""
+    from services import mql
+    from services.docfmt import compact, to_shell
+
+    command = doc.get("command") or {}
+    clean = {key: value for key, value in command.items() if key not in _COMMAND_NOISE}
+    plan = doc.get("planSummary", "")
+    ts = doc.get("ts")
+    affected = next((_int(doc[key]) for key in ("nModified", "ndeleted", "ninserted")
+                     if doc.get(key) is not None), None)
+
+    def shell(value: Any) -> str:
+        return to_shell(mql.to_display(value))
+
+    def line(value: Any) -> str:
+        # The find boxes are one line. JSON strings escape their newlines,
+        # so joining the indented lines changes no value.
+        return " ".join(part.strip() for part in shell(value).splitlines()) if value else ""
+
+    reopen = None
+    if isinstance(command.get("find"), str):
+        reopen = {"coll": command["find"], "mode": "find",
+                  "filter": line(command.get("filter")), "sort": line(command.get("sort")),
+                  "projection": line(command.get("projection"))}
+    elif isinstance(command.get("aggregate"), str) and isinstance(command.get("pipeline"), list):
+        reopen = {"coll": command["aggregate"], "mode": "aggregate",
+                  "pipeline": shell(command["pipeline"])}
+    return {
+        "ts": ts.isoformat(timespec="milliseconds") if hasattr(ts, "isoformat") else str(ts or ""),
+        "op": doc.get("op", ""),
+        "ns": doc.get("ns", ""),
+        "millis": _int(doc.get("millis")) or 0,
+        "plan": plan,
+        "collscan": "COLLSCAN" in plan,
+        "in_memory_sort": bool(doc.get("hasSortStage")),
+        "docs_examined": _int(doc.get("docsExamined")),
+        "keys_examined": _int(doc.get("keysExamined")),
+        "returned": _int(doc.get("nreturned")),
+        "affected": affected,
+        "response_length": _int(doc.get("responseLength")),
+        "app": doc.get("appName", ""),
+        "client": doc.get("client", ""),
+        "user": doc.get("user", ""),
+        "shape": doc.get("planCacheShapeHash") or doc.get("queryHash") or "",
+        "error": doc.get("errMsg", ""),
+        "query": compact(mql.to_display(_query_part(clean)), 300) if clean else "",
+        "command": mql.to_display(clean),
+        "open": reopen,
+    }

@@ -183,7 +183,11 @@ MONGUANA_PASS=… python3 tests/smoke/ui_smoke.py
 The smoke test logs in, creates a profile through the editor (and its Test
 button), then filters, sorts, pages, switches views, edits, runs an
 updateMany through its preview, aggregates, uses Fields, checks the per-kind
-context menus, exports CSV, and round-trips a dump through Restore. It fails
+context menus, exports CSV, round-trips a dump through Restore, and opens the
+dashboard and the query profiler (on, a recorded query reopened, off, cleared).
+It expects an admin whose password is not flagged for change (the reminder
+dialog blocks it): `manage.py reset-password admin` first on a fresh data
+dir. Its About step expects the release check on. It fails
 on any browser console error. Screenshots land in `tests/smoke/` (ignored).
 
 ## Things that will bite (inherited — details in IguanaXterm's CLAUDE.md)
@@ -447,6 +451,53 @@ results, `check()` for cooperative cancel); the page polls
   toggled from a server's or database's menu), `columns:<conn>:<db>:<coll>`
   (phase 35) and `view:<conn>:<db>:<coll>` (the Table/JSON/Tree choice).
 
+### Dashboard and query profiler (added 2026-10-01)
+
+Two tab kinds besides collection views, held in `self._dashes` (not
+`_views`) and routed by their `.mg-dash` root, as views are by `.mg-view`:
+`_dash_action` (clicks), `_dash_change` (changes). Closing the tab runs
+`_discard_dash`, which clears its `setInterval`.
+
+- **Dashboard** (`_open_dashboard`; server menu, toolbar): one per
+  connection. Polls `MongoService.server_status` every `DASH_POLL_SECONDS`
+  (5) **only while auto is on, its tab is in front and the page is visible**.
+  Counters are cumulative; the page keeps `DASH_HISTORY` samples and turns
+  deltas over `uptimeMillis` into rates (a lower uptime = restart, history
+  cleared). Sparklines are hand-made inline SVG (`_sparkline`): one series,
+  a `<title>` per sample for the tooltip. `database_stats` (dbStats + profile
+  level per database, first `DASHBOARD_MAX_DATABASES`) runs on open, on
+  Refresh and after a profiler change — not every poll.
+- **Profiler** (`_open_profiler`; database menu, a dashboard row): one per
+  database. `profiler_summary` groups `system.profile` by ns + op +
+  `planCacheShapeHash`/`queryHash`; `profiler_entries` is newest first
+  (`$natural: -1`). An entry's `open` is how to re-run it in a view (find:
+  one-line filter/sort/projection via `to_shell`; aggregate: the pipeline);
+  `_open_profiled` sets the boxes right after `_open_view`, before its
+  spawned first query runs.
+- Capabilities **`server_status`** (serverStatus, dbStats, `$currentOp`;
+  without it the dashboard shows databases with collection counts only) and
+  **`profiler`** (hidden without it).
+
+Traps, all measured on 7.0:
+
+- **`serverStatus` with `metrics: 0` also drops `mem`**, even with `mem: 1`.
+  Only `repl` and `locks` are excluded.
+- **Reading `system.profile` is itself profiled** at level 2, so without a
+  collection filter `_profile_query` excludes `<db>.system.profile`.
+- **`slowms` and `sampleRate` are the mongod's, not the database's** (they
+  also set what the log calls slow). `set_profiler` leaves them alone when
+  passed negative — the dashboard's on/off menu does — and the profiler tab
+  says so in its tooltips.
+- **`system.profile` can only be dropped while profiling is off**:
+  `profiler_clear` switches it off, drops, and restores the level and settings.
+- `$currentOp` lists itself; `_current_ops` drops the entry whose pipeline
+  starts with `$currentOp`. `serverStatus` needs `clusterMonitor` and
+  `$currentOp` with `allUsers` needs `inprog`: each half fails on its own
+  and the page says which.
+- `find()` takes `max_time_ms`, not `maxTimeMS`: `_time_limit(ms,
+  "max_time_ms")` there.
+- The local database cannot be profiled; refused before the server is asked.
+
 ### Index CRUD (added 2026-09-25)
 
 The Indexes dialog lists (with sizes), creates, edits, hides/unhides and
@@ -612,7 +663,9 @@ Every gap from the original is closed (ROADMAP phases 31–37). ROADMAP.md
 lists what the rewrite still does not do: a live progress bar for export. Phase 38 plans a native
 Windows installer (no Docker, no HTTPS, browser only).
 Phase 39 (done) added backends: tinymongo stores and plugins, with dump,
-restore and copy between any of them.
+restore and copy between any of them. The dashboard has no Kill for a
+running operation yet, and the profiler shows a server profile filter but
+does not edit one.
 
 ## Conventions
 

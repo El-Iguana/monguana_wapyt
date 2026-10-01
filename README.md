@@ -98,6 +98,22 @@ MongoDB to tinymongo, or back. All of it works on every backend, and runs in
 the background with a progress console — a bar per collection, a log, and
 Cancel — and the restore upload shows its own progress.
 
+**Dashboard.** A server's live numbers in one tab (right-click a server, or
+**Dashboard** in the toolbar): uptime, connections, memory, the WiredTiger
+cache, and throughput per second — queries, inserts, updates, deletes,
+commands, network — with a five-minute sparkline each, refreshed every 5
+seconds while the tab is in front. Below, every database's size, documents,
+indexes and profiler state, and the operations running right now, longest
+first.
+
+**Query profiler.** Turn MongoDB's profiler off, on for slow operations
+(with the threshold and sample rate), or on for everything — per database,
+from its menu, its own tab, or the dashboard. See what it recorded grouped by
+query shape (how often, how slow, documents examined against returned, which
+plan — collection scans flagged) or one operation at a time, filtered by
+collection, type and duration. A recorded find or aggregate reopens in a
+collection tab with one click, ready for Explain or an index.
+
 **Accounts.** Multiple users with their own connection profiles, an admin
 panel, and password changes.
 
