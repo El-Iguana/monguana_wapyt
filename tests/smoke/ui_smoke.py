@@ -620,6 +620,26 @@ def main() -> int:
         expect(reopened.locator(".mg-summary")).to_have_text("1–44 of 44", timeout=15000)
         assert "Lisbon" in reopened.locator(f"#{rtid}-filter").input_value()
         page.locator(".wapyt-tabwidget-tabs >> text=shop · profiler").first.click()
+        step("profile filter: set from an example, shown, removed")
+        prof.locator("[data-mg=pfilter]").click()
+        pfilter = page.locator(".wapyt-modal-overlay").last
+        expect(pfilter.locator("[data-role=pfilter-editor] .cm-content")).to_be_visible(timeout=10000)
+        pfilter.locator("[data-example]:has-text('Collection scans')").click()
+        shot(page, "18b-profile-filter")
+        pfilter.locator("[data-editor=save]").click()
+        expect(pfilter).to_have_count(0, timeout=10000)
+        expect(prof.locator("[data-mg=pfilter]")).to_have_attribute("aria-pressed", "true")
+        expect(prof.locator("[data-mg=level][data-level='1']")).to_have_text("Filtered")
+        expect(prof.locator(f"#{prof.get_attribute('data-tab')}-slowms")).to_be_disabled()
+        prof.locator("[data-mg=pfilter]").click()
+        pfilter = page.locator(".wapyt-modal-overlay").last
+        expect(pfilter.locator("[data-role=pfilter-editor] .cm-content")).to_contain_text("COLLSCAN",
+                                                                                         timeout=10000)
+        pfilter.locator("[data-editor=remove]").click()
+        expect(prof.locator("[data-mg=pfilter]")).to_have_attribute("aria-pressed", "false",
+                                                                     timeout=10000)
+        expect(prof.locator("[data-mg=level][data-level='1']")).to_have_text("Slow only")
+
         prof.locator("[data-mg=level][data-level='0']").click()
         expect(prof.locator(".mg-head-stats")).to_contain_text("Profiling is off", timeout=10000)
         prof.locator("[data-mg=clear]").click()
