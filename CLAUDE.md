@@ -203,6 +203,10 @@ on any browser console error. Screenshots land in `tests/smoke/` (ignored).
   `AUTH_SESSION_CLAIM_KEYS=user_id,is_admin,username` or every BFF call is a
   silent 403.
 - **Absolute imports only** in `services/` (`from services.x import …`).
+  In `monguana.py` too, import *names* from a module (`from services.about
+  import VERSION`), never the module (`from services import about`): the
+  browser package follows only the first form, and the second boots to a
+  blank page with a truncated `import_module` traceback.
 - **wapyt installed non-editable** or the app boots with no widgets.
 - **pytincture will not serve authenticated plain HTTP** except on a literal
   loopback IP: use `http://127.0.0.1:8766`, never `localhost`.
@@ -598,6 +602,14 @@ restore and copy between any of them.
 ## Conventions
 
 - `MONGUANA_*` environment prefix, `/data` volume, SQLite + Fernet at rest.
+- **A release bumps the version in two places**: `pyproject.toml` and
+  `appcode/services/about.py` (`VERSION`, shown in About), plus the README
+  badge and `uv lock`. `tests/test_about.py` fails if the two disagree. Tag
+  `vX.Y.Z` on `main`; `windows.yml` builds the installer and the release.
+- **About and the release check**: `services/about.py` (version + links, both
+  sides), `release_check.py` (GitHub's latest-release API, cached 6 h / 30 min
+  on failure, plain module), `about_service.py` (the BFF). Off with
+  `MONGUANA_UPDATE_CHECK=off`.
 - Port **8766** (IguanaXterm has 8765).
 - **MIT**.
 - Connection profiles belong to one user; there is **no unscoped read** of

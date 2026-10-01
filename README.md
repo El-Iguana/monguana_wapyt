@@ -155,6 +155,7 @@ folder. More in the wiki's [Development](https://github.com/El-Iguana/monguana_w
 | `MONGUANA_CANONICAL_ORIGIN` | `http://127.0.0.1:PORT` | The one origin the app is reached on |
 | `MONGUANA_ALLOWED_HOSTS` | `127.0.0.1` | Host names accepted, comma-separated |
 | `MONGUANA_MAX_RESTORE_BYTES` | 1 GiB | Largest dump ZIP accepted |
+| `MONGUANA_UPDATE_CHECK` | `on` | `off` stops the server asking GitHub whether a newer release is out (About, and the toolbar's *Update* badge) |
 | `MONGUANA_TINYMONGO_ROOT` | container `/tinymongo`; unset from source (off) | The only folder tinymongo connections may open |
 | `MONGUANA_EXTRA_PACKAGES` | — | Packages built into the image (compose): tinymongo engines, backend plugins |
 
