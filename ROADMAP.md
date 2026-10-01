@@ -86,8 +86,8 @@ set of create options. See CLAUDE.md, *Index CRUD*.
   braces (`{$and: [{age: {$gte: 18}}, {age: {$lt: 65}}]}`); one stands alone.
   (It first merged AND into one object; changed 2026-10-01 at the user's
   request, so picking AND shows the list it implies.)
-- Not done: reading an existing filter back into rows. Apply replaces the
-  filter.
+- Reading an existing filter back into rows: done 2026-10-01 (see
+  "Beyond the original").
 
 ## Phase 34: pipeline stage list (original phase 11) — done (2026-09-25)
 
@@ -409,8 +409,14 @@ that creates a tinymongo profile through the editor.
 
 Not gaps — ideas the rewrite could take further:
 
-- Read an existing filter back into the query builder's rows (Apply replaces
-  the filter today).
+- ~~Read an existing filter back into the query builder's rows~~ — done
+  2026-10-01. `services/filter_rows.py` (server side, it parses with `mql`)
+  turns a flat AND or a single `$or` of one-field conditions into rows typed
+  as the builder would write them; opening the builder reads a filter that
+  changed since the rows were last read or applied, and **Read filter** does
+  it on demand. What rows cannot express (`$nor`, `$expr`, `$elemMatch`,
+  `$not`, `$or` inside an AND, numeric `$type`) is refused with a note and the
+  rows are kept. Tests prove read → build → read is a fixed point.
 - Progress for exports, which stream but show no bar.
 
 ## Order

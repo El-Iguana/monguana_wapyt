@@ -37,6 +37,7 @@ appcode/                    # pytincture modules_path
     mql.py                  #   shell-syntax parser + query safety   (server only)
     docfmt.py               #   display helpers                      (BOTH sides)
     querybuilder.py         #   visual query builder -> filter text  (BOTH sides)
+    filter_rows.py          #   filter text -> builder rows          (server only)
     pipeline_text.py        #   pipeline text <-> stage cards         (BOTH sides)
     mongo_pool.py           #   client pool — plain module, NOT a BFF
     backends/               #   what a profile points at (phase 39) — plain, NOT BFFs
@@ -483,6 +484,13 @@ into shell-syntax text; the view's **Builder** panel (`_qb_*` in
   back on the same control; value edits only update the preview.
 - Apply goes through `_set_text`, so it lands in the filter editor's undo
   history.
+- **Reading a filter back** is server side (`services/filter_rows.py`, via
+  `MongoService.builder_rows`): the browser has no `bson`, so it cannot run
+  `mql`. `view["builder"]["source"]` is the filter text the rows were read
+  from or applied as; opening the panel reads the filter only when it
+  differs, so rows in progress for the same filter survive a close. A filter
+  rows cannot express sets `note` and leaves the rows alone. The reply is
+  dropped if the filter changed while it was asked.
 
 ### The pipeline stage list (ROADMAP phase 34)
 
@@ -589,8 +597,7 @@ in the background (`_sample_fields`) so completions offer field paths at once.
 ## Not built yet
 
 Every gap from the original is closed (ROADMAP phases 31–37). ROADMAP.md
-lists what the rewrite still does not do: reading a filter back into the
-builder, and a live progress bar for export. Phase 38 plans a native
+lists what the rewrite still does not do: a live progress bar for export. Phase 38 plans a native
 Windows installer (no Docker, no HTTPS, browser only).
 Phase 39 (done) added backends: tinymongo stores and plugins, with dump,
 restore and copy between any of them.
