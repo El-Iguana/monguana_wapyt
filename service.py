@@ -203,6 +203,7 @@ def build_app():
         )
     )
 
+    pytincture_compat.apply_to_app(application)
     check_at_startup()
     application.add_middleware(LoginPageMiddleware)
     application.include_router(transfer_router)
