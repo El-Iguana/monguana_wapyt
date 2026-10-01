@@ -218,6 +218,14 @@ on any browser console error. Screenshots land in `tests/smoke/` (ignored).
 - **No CDN, ever.** pytincture's CSP blocks it. This is why the original's
   Monaco and AG Grid are not here (see *Not built yet*).
 - **`JsNull` is not `None`.** Test DOM lookups for truthiness.
+- **pytincture's service worker is turned off** (`pytincture_compat`, all
+  platforms). Its scope is `/monguana/` but the page is `/monguana`, so it
+  never controls the page and the loader waited 5 s for it on every load
+  (7.5 s → 2.3 s without it). The patch must go on the backend
+  `create_app()` returns (`apply_to_app`): `create_app` loads a private copy
+  of `pytincture.backend.app`, so patching the imported module does nothing.
+  `test_the_template_still_needs_the_patch` fails once pytincture stops
+  hard-coding the worker on; then drop the patch.
 - **`dataset["for"]` does not work through Pyodide** — use
   `getAttribute("data-for")`.
 
