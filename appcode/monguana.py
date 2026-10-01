@@ -1568,7 +1568,9 @@ class Monguana(MainWindow):
             "docs": [], "mode": "find", "shown": "table", "readonly": False,
             "table": None, "tree": None, "schema": None, "tsort": None,
             "syncing_sort": False, "busy": False,
-            "builder": {"logic": "and", "rows": [self._qb_blank()]},
+            # source: the filter text the rows were read from or applied as;
+            # note: why the filter could not be read back, while it stands.
+            "builder": {"logic": "and", "rows": [self._qb_blank()], "source": None, "note": ""},
             # The pipeline as cards (phase 34); the raw text stays the source
             # of truth and is rewritten from these on every change.
             "pl_mode": "stages", "stages": [], "stage_counter": 0,
@@ -2137,6 +2139,37 @@ class Monguana(MainWindow):
             first = panel.querySelector("[data-qb=field]")
             if first:
                 first.focus()
+            # A filter written or changed since the rows were last read or
+            # applied is read back; rows still in progress for this filter stay.
+            text = self._query(tid)["filter"]
+            if text.strip() and text.strip() != (self._views[tid]["builder"]["source"] or "").strip():
+                _spawn(self._qb_load(tid), "builder read filter")
+
+    async def _qb_load(self, tid: str, explicit: bool = False) -> None:
+        """Read the filter box back into the builder's rows (``filter_rows``)."""
+        view = self._views.get(tid)
+        if view is None:
+            return
+        state = view["builder"]
+        text = self._query(tid)["filter"]
+        if not text.strip():
+            if explicit:
+                state.update(rows=[self._qb_blank()], logic="and", source=text, note="")
+                self._qb_render(tid)
+            return
+        result = await MongoService().builder_rows_async(text)
+        if tid not in self._views or self._query(tid)["filter"] != text:
+            return  # closed, or the filter changed while this was asked
+        if result.get("ok"):
+            rows = [{key: (bool(row.get(key)) if key == "type_set" else str(row.get(key) or ""))
+                     for key in ("field", "op", "type", "value", "type_set")}
+                    for row in result.get("rows") or []]
+            state.update(rows=rows or [self._qb_blank()], logic=str(result.get("logic") or "and"),
+                         source=text, note="")
+        else:
+            state["note"] = (f"The filter can't be shown as rows: {result.get('error', 'unknown')}. "
+                             "Apply replaces it.")
+        self._qb_render(tid)
 
     def _qb_row_html(self, tid: str, index: int, row: dict) -> str:
         sampled = self._qb_types(tid)
@@ -2199,6 +2232,8 @@ class Monguana(MainWindow):
         panel = _el(f"{tid}-builder")
         panel.innerHTML = (
             f'<datalist id="{tid}-qb-fields">{datalist}</datalist>'
+            + (f'<div class="mg-qb-note" role="status"><span class="mdi mdi-information-outline"></span> '
+               f'{_esc(state["note"])}</div>' if state.get("note") else "") +
             f'<div class="mg-qb-rows">{"".join(rows_html)}</div>'
             '<div class="mg-qb-foot">'
             '<span class="mg-seg" role="group" aria-label="Combine conditions">'
@@ -2209,6 +2244,9 @@ class Monguana(MainWindow):
             '<button type="button" class="mg-btn" data-mg="qb_add"><span class="mdi mdi-plus"></span>'
             "<span>Condition</span></button>"
             f'<code class="mg-qb-preview" id="{tid}-qb-preview"></code>'
+            '<button type="button" class="mg-btn" data-mg="qb_read" '
+            'title="Replace these rows with the filter as it is now">'
+            '<span class="mdi mdi-import"></span><span>Read filter</span></button>'
             '<button type="button" class="mg-btn" data-mg="qb_clear">Clear</button>'
             '<button type="button" class="mg-btn mg-primary" data-mg="qb_apply" '
             'title="Replace the filter with this and run it (Ctrl+Z in the filter undoes)">'
@@ -2291,12 +2329,15 @@ class Monguana(MainWindow):
             state["rows"] = [self._qb_blank()]
             state["logic"] = "and"
             self._qb_render(tid)
+        elif action == "qb_read":
+            _spawn(self._qb_load(tid, explicit=True), "builder read filter")
         elif action == "qb_apply":
             text = self._qb_preview(tid)
             if text is None:
                 self._toast("Fix the highlighted condition first.")
                 return
             self._set_text(f"{tid}-filter", text)
+            state["source"], state["note"] = text, ""
             view = self._views[tid]
             if view["mode"] == "aggregate":
                 _el(f"{tid}-mode").value = "find"
@@ -3858,6 +3899,8 @@ _CSS = """
   padding:5px 8px;border-radius:5px;background:var(--mg-panel);color:#6ee7b7;
   font:12px ui-monospace,Menlo,Consolas,monospace;}
 .mg-qb-preview[data-state="error"]{color:#fca5a5;}
+.mg-qb-note{padding:5px 8px;border-radius:5px;background:var(--mg-panel);color:#fcd34d;
+  font:12px system-ui,sans-serif;}
 .mg-input,.mg-select{background:var(--mg-bg);color:var(--mg-text);border:1px solid var(--mg-line-2);
   border-radius:6px;padding:6px 8px;font:12.5px system-ui,sans-serif;box-sizing:border-box;}
 .mg-input:focus,.mg-select:focus{outline:none;border-color:var(--mg-accent);
