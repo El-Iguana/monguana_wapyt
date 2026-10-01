@@ -563,6 +563,23 @@ class MongoService:
 
         return self._guard(work)
 
+    def builder_rows(self, filter: str = "") -> dict:
+        """
+        The filter as the visual query builder's rows (``filter_rows``), or
+        why it cannot be shown as rows. Parsing only: no connection is used.
+        """
+        def work() -> dict:
+            from services.filter_rows import RowsError, filter_to_rows
+
+            if not self._user_id:
+                raise _Refused("Not authenticated")
+            try:
+                return filter_to_rows(filter)
+            except RowsError as exc:
+                raise _Refused(str(exc)) from None
+
+        return self._guard(work)
+
     def explain(self, conn_id: int, db: str, coll: str, filter: str = "", sort: str = "") -> dict:
         def work() -> dict:
             from services import mql

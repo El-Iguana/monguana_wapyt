@@ -371,6 +371,31 @@ def main() -> int:
         view.locator("[data-mg=builder]").click()
         expect(builder).to_be_hidden()
 
+        step("the builder reads the filter back into rows")
+        # Reopened on the filter it applied: the rows are the same ones.
+        view.locator("[data-mg=builder]").click()
+        expect(rows_qb).to_have_count(2)
+        view.locator("[data-mg=builder]").click()
+        set_filter('status: "paid", number: {$gte: 1000, $lt: 1100}')
+        page.wait_for_timeout(1000)
+        view.locator("[data-mg=builder]").click()
+        expect(rows_qb).to_have_count(3, timeout=10000)
+        expect(rows_qb.nth(0).locator("[data-qb=field]")).to_have_value("status")
+        expect(rows_qb.nth(0).locator("[data-qb=value]")).to_have_value("paid")
+        expect(rows_qb.nth(2).locator("[data-qb=op]")).to_have_value("$lt")
+        expect(rows_qb.nth(2).locator("[data-qb=type]")).to_have_value("number")
+        expect(preview).to_have_text(
+            '{$and: [{status: "paid"}, {number: {$gte: 1000}}, {number: {$lt: 1100}}]}')
+        # A filter the rows cannot express leaves them alone and says why.
+        set_filter("{items: {$elemMatch: {qty: {$gt: 1}}}}")
+        page.wait_for_timeout(1000)
+        builder.locator("[data-mg=qb_read]").click()
+        expect(builder.locator(".mg-qb-note")).to_contain_text("$elemMatch", timeout=10000)
+        expect(rows_qb).to_have_count(3)
+        shot(page, "07d-builder-read")
+        view.locator("[data-mg=builder]").click()
+        expect(builder).to_be_hidden()
+
         step("fields dialog")
         view.locator(f"#{tid}-mode").select_option("find")
         view.locator("[data-mg=reset]").click()

@@ -61,7 +61,9 @@ its own query, page and view.
 - **Visual query builder:** conditions as rows — field, operator, value type,
   value — combined with AND or OR, with a live preview of the filter. Values
   are written as their type (dates as `ISODate`, ids as `ObjectId`, zip codes
-  stay strings), defaulting to the type the field was sampled with.
+  stay strings), defaulting to the type the field was sampled with. Opening
+  it reads the current filter back into rows, when the filter is one the
+  rows can express.
 - **Query modes:** `find`, `aggregate`, `updateOne`, `updateMany`,
   `deleteOne`, `deleteMany`. Writes show how many documents match and the
   first 20 of them, and wait for you to confirm.
