@@ -426,11 +426,29 @@ def parse(text: str) -> Any:
     return result
 
 
+def parse_braced(text: str) -> Any:
+    """
+    Parse one value, forgiving missing outer braces: ``status: "a", n: 1``
+    is read as ``{status: "a", n: 1}``. Only when the text as written does not
+    parse, so a real error inside braces keeps its own message and position.
+    """
+    try:
+        return parse(text)
+    except MQLError:
+        if text.lstrip()[:1] in ("{", "["):
+            raise
+        try:
+            return parse("{" + text + "}")
+        except MQLError:
+            pass
+        raise
+
+
 def parse_object(text: str, what: str = "filter") -> dict:
-    """An object, where blank means ``{}``."""
+    """An object, where blank means ``{}`` and the outer braces may be left out."""
     if not (text or "").strip():
         return {}
-    result = parse(text)
+    result = parse_braced(text)
     if not isinstance(result, dict):
         raise MQLError(f"The {what} must be an object, like {{field: value}}")
     return result
@@ -440,7 +458,7 @@ def parse_pipeline(text: str) -> list:
     """An aggregation pipeline: an array of stages, or one bare stage."""
     if not (text or "").strip():
         return []
-    result = parse(text)
+    result = parse_braced(text)
     if isinstance(result, dict):
         result = [result]
     if not isinstance(result, list):
@@ -459,7 +477,7 @@ def parse_update(text: str) -> Any:
     """
     if not (text or "").strip():
         raise MQLError("The update is empty")
-    result = parse(text)
+    result = parse_braced(text)
     if isinstance(result, list):
         for stage in result:
             if not isinstance(stage, dict) or len(stage) != 1:
