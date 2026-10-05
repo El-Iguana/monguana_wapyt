@@ -67,7 +67,7 @@ examples/monguana-sandbox-backend/  # a working backend plugin; tests/test_plugi
 ```bash
 uv sync
 ../wa_pytincture_widgetset/scripts/dev_wheel.sh appcode   # after ANY wapyt asset edit
-uv run python service.py                                  # http://127.0.0.1:8766/monguana
+uv run python service.py                                  # http://127.0.0.2:8766/monguana
 uv run --group dev pytest -q
 scripts/podman-run.sh      # dev container "monguana": host network, local wapyt
 ```
@@ -121,7 +121,7 @@ the browser wapyt wheel — and with `--installer` runs Inno Setup
 needs Windows, so the `windows` workflow builds, silently installs, runs
 `--check`, start/stop and uninstall on `windows-latest`. `launcher.py`
 (installed as `app\monguana_launcher.py`) runs the server as a child on
-127.0.0.1, port 8766 or the next free one; data in `%LOCALAPPDATA%\Monguana`.
+127.0.0.2, port 8766 or the next free one; data in `%LOCALAPPDATA%\Monguana`.
 Tests: `tests/test_launcher.py`; by hand on Linux with
 `MONGUANA_DATA_DIR=… uv run python build/windows/bundle/app/monguana_launcher.py --check`.
 
@@ -216,7 +216,14 @@ on any browser console error. Screenshots land in `tests/smoke/` (ignored).
   blank page with a truncated `import_module` traceback.
 - **wapyt installed non-editable** or the app boots with no widgets.
 - **pytincture will not serve authenticated plain HTTP** except on a literal
-  loopback IP: use `http://127.0.0.1:8766`, never `localhost`.
+  loopback IP: use `http://127.0.0.2:8766`, never `localhost`.
+- **Monguana lives on 127.0.0.2, not 127.0.0.1** (`MONGUANA_HOST`). Cookies
+  are per host, not per port, and pytincture hard-codes the session cookie
+  name (`pytincture-dev-session` / `__Host-pytincture-session`), so next to
+  IguanaXterm on 127.0.0.1 each sign-in clobbered the other app's cookie —
+  "I keep having to log in again". macOS needs `ifconfig lo0 alias 127.0.0.2`
+  or `MONGUANA_HOST=127.0.0.1`. Drop this once pytincture lets an app name
+  its cookie.
 - **2 MiB body cap on every route.** `BodyLimitExceptRestore` lifts it for
   `POST /mg/restore/<id>` only; that route authenticates and checks CSRF
   before reading a byte and enforces `MONGUANA_MAX_RESTORE_BYTES` while

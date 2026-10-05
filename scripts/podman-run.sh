@@ -8,7 +8,8 @@
 #
 # Host networking so profiles can point at MongoDB on this machine
 # (127.0.0.1:27017) or the LAN, exactly as from a local run; the app binds to
-# 127.0.0.1 so it is not published to the network. Plain podman rather than
+# 127.0.0.2 so it is not published to the network, and so its sign-in cookie
+# is not shared with IguanaXterm on 127.0.0.1. Plain podman rather than
 # compose, which needs the podman socket running.
 set -euo pipefail
 
@@ -16,6 +17,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAME=monguana
 IMAGE=localhost/monguana
 PORT="${PORT:-8766}"
+HOST="${MONGUANA_HOST:-127.0.0.2}"
 VOLUME=monguana_data
 
 cd "$ROOT"
@@ -51,9 +53,10 @@ podman run -d \
   --userns=keep-id:uid=10001,gid=999 \
   --env-file .env \
   -e MONGUANA_DATA_DIR=/data \
-  -e MONGUANA_BIND=127.0.0.1 \
+  -e "MONGUANA_HOST=$HOST" \
+  -e "MONGUANA_BIND=$HOST" \
   -e "PORT=$PORT" \
-  -e "MONGUANA_CANONICAL_ORIGIN=http://127.0.0.1:$PORT" \
+  -e "MONGUANA_CANONICAL_ORIGIN=http://$HOST:$PORT" \
   -v "$VOLUME:/data:U" \
   -v monguana-tinymongo:/tinymongo:U \
   "$IMAGE:latest" >/dev/null
@@ -61,8 +64,8 @@ podman run -d \
 printf '==> waiting for startup'
 for _ in $(seq 1 90); do
   if podman logs "$NAME" 2>&1 | grep -q "Application startup complete"; then
-    echo; echo "    Monguana $VERSION on http://127.0.0.1:$PORT/monguana"
-    echo "    (use 127.0.0.1, not localhost — pytincture requires a literal loopback address)"
+    echo; echo "    Monguana $VERSION on http://$HOST:$PORT/monguana"
+    echo "    (use $HOST, not localhost — pytincture requires a literal loopback address)"
     [ "${1:-}" = "--logs" ] && podman logs -f "$NAME"
     exit 0
   fi

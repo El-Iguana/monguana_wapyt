@@ -8,7 +8,7 @@ a MongoDB with the ``shop`` sample (``seed_shop.py``) and Playwright.
     uv run python tests/smoke/seed_shop.py
     python3 tests/smoke/ui_smoke.py
 
-Environment: MONGUANA_URL (default http://127.0.0.1:8766/monguana),
+Environment: MONGUANA_URL (default http://127.0.0.2:8766/monguana),
 MONGUANA_USER / MONGUANA_PASS (required) for the app login, and SMOKE_MONGO_HOST,
 SMOKE_MONGO_PORT, SMOKE_MONGO_USER, SMOKE_MONGO_PASS for the server profile it
 creates. Screenshots land next to this file (git-ignored).
@@ -23,7 +23,7 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 HERE = Path(__file__).resolve().parent
-APP = os.environ.get("MONGUANA_URL", "http://127.0.0.1:8766/monguana")
+APP = os.environ.get("MONGUANA_URL", "http://127.0.0.2:8766/monguana")
 USER = os.environ.get("MONGUANA_USER", "admin")
 PASS = os.environ.get("MONGUANA_PASS", "")
 MONGO = {

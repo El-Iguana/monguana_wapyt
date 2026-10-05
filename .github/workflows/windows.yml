@@ -112,7 +112,7 @@ jobs:
           # A .js asset must not come back as text/plain (Windows registry MIME).
           $status = & "$app\python\python.exe" "$app\app\monguana_launcher.py" --status
           $port = ([uri]$status).Port
-          $js = Invoke-WebRequest "http://127.0.0.1:$port/vendor/codemirror/monguana-editor.js" -UseBasicParsing
+          $js = Invoke-WebRequest "http://$(([uri]$status).Host):$port/vendor/codemirror/monguana-editor.js" -UseBasicParsing
           "editor bundle: $($js.StatusCode) $($js.Headers['Content-Type'])"
           if ($js.Headers['Content-Type'] -notlike 'text/javascript*') { throw "wrong MIME type for .js" }
           & "$app\python\python.exe" "$app\app\monguana_launcher.py" --stop
