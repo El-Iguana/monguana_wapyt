@@ -6,11 +6,12 @@ The installer puts this next to ``service.py`` as ``monguana_launcher.py``
 and points the Start-menu shortcut at it through ``pythonw.exe``. It:
 
 * keeps one instance: a second launch just opens the browser on the first;
-* picks port 8766, or the next free one up to 8799, on 127.0.0.1 only;
+* picks port 8766, or the next free one up to 8799, on 127.0.0.2 only
+  (``MONGUANA_HOST`` overrides it; see ``HOST`` below);
 * on the first run, says how to sign in: ``admin`` / ``change_me``, which
   the app then asks you to change on every load until you do;
 * starts ``service.py`` as a child process, logging to ``logs\\server.log``;
-* opens ``http://127.0.0.1:<port>/monguana`` in the default browser —
+* opens ``http://127.0.0.2:<port>/monguana`` in the default browser —
   never ``localhost``, which pytincture answers with 400;
 * sits in the tray (Open / Log folder / Quit) until Quit or the server dies.
 
@@ -47,6 +48,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 APPLICATION = "monguana"
 FIRST_PORT, LAST_PORT = 8766, 8799
+# Monguana's own loopback address. Browsers keep cookies per host, not per
+# port, and every pytincture app names its session cookie the same: on
+# 127.0.0.1 next to IguanaXterm (or any other pytincture app), signing in to
+# one signs you out of the other. Windows and Linux answer on all of
+# 127.0.0.0/8 with no setup.
+HOST = os.environ.get("MONGUANA_HOST", "").strip() or "127.0.0.2"
 START_TIMEOUT = 120  # seconds; the first start builds pytincture's browser assets
 IS_WINDOWS = sys.platform == "win32"
 
@@ -87,12 +94,12 @@ def message(text: str, title: str = "Monguana", error: bool = False) -> None:
 # ── the running instance ────────────────────────────────────────────────────
 
 def url(port: int) -> str:
-    return f"http://127.0.0.1:{port}/{APPLICATION}"
+    return f"http://{HOST}:{port}/{APPLICATION}"
 
 
 def healthy(port: int, timeout: float = 2.0) -> bool:
     request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/healthz", headers={"Host": f"127.0.0.1:{port}"}
+        f"http://{HOST}:{port}/healthz", headers={"Host": f"{HOST}:{port}"}
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -131,7 +138,7 @@ def free_port() -> int | None:
     for port in range(FIRST_PORT, LAST_PORT + 1):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             try:
-                probe.bind(("127.0.0.1", port))
+                probe.bind((HOST, port))
             except OSError:
                 continue
             return port
@@ -181,10 +188,11 @@ def start_server(port: int) -> subprocess.Popen:
     env.update({
         "MONGUANA_DATA_DIR": str(DATA),
         "MONGUANA_TINYMONGO_ROOT": tinymongo_root,
-        "MONGUANA_BIND": "127.0.0.1",
+        "MONGUANA_HOST": HOST,
+        "MONGUANA_BIND": HOST,
         "PORT": str(port),
-        "MONGUANA_CANONICAL_ORIGIN": f"http://127.0.0.1:{port}",
-        "MONGUANA_ALLOWED_HOSTS": "127.0.0.1",
+        "MONGUANA_CANONICAL_ORIGIN": f"http://{HOST}:{port}",
+        "MONGUANA_ALLOWED_HOSTS": HOST,
         "PYTHONUNBUFFERED": "1",
         # UTF-8 for open() and the log, whatever the Windows code page is.
         "PYTHONUTF8": "1",
@@ -233,7 +241,7 @@ def launch() -> tuple[subprocess.Popen, int] | None:
     DATA.mkdir(parents=True, exist_ok=True)
     port = free_port()
     if port is None:
-        message(f"No free port between {FIRST_PORT} and {LAST_PORT} on 127.0.0.1.", error=True)
+        message(f"No free port between {FIRST_PORT} and {LAST_PORT} on {HOST}.", error=True)
         return None
     first_run = not (DATA / "monguana.db").exists()
     server = start_server(port)
@@ -371,7 +379,7 @@ def cmd_check(_args) -> int:
         return 1
     server, port = started
     try:
-        request = urllib.request.Request(url(port), headers={"Host": f"127.0.0.1:{port}"})
+        request = urllib.request.Request(url(port), headers={"Host": f"{HOST}:{port}"})
         with urllib.request.urlopen(request, timeout=30) as response:
             page = response.read().decode("utf-8", "replace")
         # The login page, with Monguana's "Username" rewrite applied.

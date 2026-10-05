@@ -14,6 +14,7 @@ PATH = Path(__file__).resolve().parents[1] / "tools" / "windows" / "launcher.py"
 @pytest.fixture
 def launcher(monkeypatch, tmp_path):
     monkeypatch.setenv("MONGUANA_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("MONGUANA_HOST", raising=False)
     spec = importlib.util.spec_from_file_location("monguana_launcher_under_test", PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -34,12 +35,18 @@ def test_default_data_dir_is_per_user(launcher, monkeypatch, tmp_path):
 
 
 def test_the_url_is_the_loopback_ip_never_localhost(launcher):
-    assert launcher.url(8766) == "http://127.0.0.1:8766/monguana"
+    assert launcher.url(8766) == "http://127.0.0.2:8766/monguana"
+
+
+def test_its_loopback_address_is_not_127_0_0_1(launcher):
+    # Cookies are per host, not per port: on 127.0.0.1 Monguana's session
+    # cookie would clobber IguanaXterm's (same name) and vice versa.
+    assert launcher.HOST == "127.0.0.2"
 
 
 def test_free_port_skips_a_taken_one(launcher, monkeypatch):
     with socket.socket() as taken:
-        taken.bind(("127.0.0.1", 0))
+        taken.bind((launcher.HOST, 0))
         port = taken.getsockname()[1]
         monkeypatch.setattr(launcher, "FIRST_PORT", port)
         monkeypatch.setattr(launcher, "LAST_PORT", port + 20)

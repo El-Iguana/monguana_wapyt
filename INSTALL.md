@@ -186,14 +186,23 @@ docker compose ps           # wait for "(healthy)"
 docker compose logs -f      # Ctrl+C stops following, not the app
 ```
 
-Then open **<http://127.0.0.1:8766/monguana>** (or your `MONGUANA_PORT`) and
+Then open **<http://127.0.0.2:8766/monguana>** (or your `MONGUANA_PORT`) and
 sign in as `admin` with the password from `.env`. Change it from **Password**
 in the toolbar.
 
-> **Use `127.0.0.1`, not `localhost`.** Monguana (through pytincture) only
+> **Use `127.0.0.2`, not `localhost`.** Monguana (through pytincture) only
 > serves signed-in sessions over plain HTTP on a *literal* loopback address,
 > and it only listens on this computer. `localhost` is refused. To use it from
 > other machines, see [section 8](#8-reaching-monguana-from-other-machines).
+
+> **Own loopback address.** Monguana uses `127.0.0.2` rather than `127.0.0.1`
+> because browsers keep cookies per host, not per port, and every
+> pytincture-based app — IguanaXterm included — names its sign-in cookie the
+> same. Both on `127.0.0.1`, signing in to one signs you out of the other.
+> Linux and Windows answer on all of `127.0.0.0/8` with no setup. **macOS**
+> answers only on `127.0.0.1`: either run `sudo ifconfig lo0 alias 127.0.0.2`
+> (until the next restart), or set `MONGUANA_HOST=127.0.0.1` in `.env` and
+> accept the shared sign-in.
 
 To also start a **MongoDB to try it with**:
 
@@ -400,7 +409,8 @@ The same thing with plain commands (Podman: replace `docker` with `podman`).
 docker build -f Containerfile -t localhost/monguana:latest .
 docker volume create monguana-data
 docker run -d --name monguana --restart unless-stopped \
-  -p 127.0.0.1:8766:8766 \
+  -p 127.0.0.2:8766:8766 \
+  -e MONGUANA_CANONICAL_ORIGIN=http://127.0.0.2:8766 \
   --env-file .env \
   --add-host host.docker.internal:host-gateway \
   -v monguana-data:/data \
@@ -410,7 +420,8 @@ docker run -d --name monguana --restart unless-stopped \
 docker build -f Containerfile -t localhost/monguana:latest .
 docker volume create monguana-data
 docker run -d --name monguana --restart unless-stopped `
-  -p 127.0.0.1:8766:8766 `
+  -p 127.0.0.2:8766:8766 `
+  -e MONGUANA_CANONICAL_ORIGIN=http://127.0.0.2:8766 `
   --env-file .env `
   --add-host host.docker.internal:host-gateway `
   -v monguana-data:/data `
@@ -421,18 +432,18 @@ docker run -d --name monguana --restart unless-stopped `
   named `Dockerfile`.
 - `--add-host …:host-gateway` gives Docker Engine on Linux the
   `host.docker.internal` name; it is harmless elsewhere.
-- **Another host port** (say 9000): `-p 127.0.0.1:9000:8766` *and*
-  `-e MONGUANA_CANONICAL_ORIGIN=http://127.0.0.1:9000`, since the app must know
+- **Another host port** (say 9000): `-p 127.0.0.2:9000:8766` *and*
+  `-e MONGUANA_CANONICAL_ORIGIN=http://127.0.0.2:9000`, since the app must know
   the address the browser uses.
 - **Host networking on Linux**: replace the `-p` and `--add-host` lines with
-  `--network host -e MONGUANA_BIND=127.0.0.1`.
+  `--network host -e MONGUANA_BIND=127.0.0.2`.
 
 ---
 
 ## 8. Reaching Monguana from other machines
 
 Monguana holds credentials for your databases, so it refuses to serve
-sign-ins over plain HTTP anywhere but `127.0.0.1`. To use it from other
+sign-ins over plain HTTP anywhere but a loopback address. To use it from other
 machines, put an HTTPS reverse proxy in front and tell Monguana its public
 address. With [Caddy](https://caddyserver.com/) on the same machine, which
 obtains the certificate itself:
@@ -445,12 +456,12 @@ obtains the certificate itself:
 2. A `Caddyfile`:
    ```
    mongo.example.com {
-       reverse_proxy 127.0.0.1:8766
+       reverse_proxy 127.0.0.2:8766
    }
    ```
 3. `docker compose up -d` (to apply the new settings) and start Caddy.
 
-Keep the `127.0.0.1:` in the published port: only the proxy should reach
+Keep the `127.0.0.2:` in the published port: only the proxy should reach
 Monguana. `mongo.example.com` must resolve to the machine, and ports 80 and 443
 must reach Caddy for it to get a certificate (or use your own certificate with
 Caddy's `tls` directive). Any HTTPS reverse proxy works the same way —
@@ -462,7 +473,7 @@ nginx, Traefik, a cloud load balancer — as long as it sends
 ## 9. Troubleshooting
 
 **The page says `Invalid host header`.** You opened `localhost` (or another
-name). Use `http://127.0.0.1:8766` exactly, or set up
+name). Use `http://127.0.0.2:8766` exactly, or set up
 [section 8](#8-reaching-monguana-from-other-machines).
 
 **`port is already allocated` / `address already in use`.** Something else
@@ -556,13 +567,15 @@ installed.
   the Start menu. It can also add a desktop shortcut and start Monguana when
   you sign in.
 - Starting **Monguana** runs the server in the background and opens
-  `http://127.0.0.1:8766/monguana` in your default browser. If 8766 is taken,
+  `http://127.0.0.2:8766/monguana` in your default browser. If 8766 is taken,
   it uses the next free port. A tray icon offers **Open Monguana**, **Show log
   folder** and **Quit Monguana**. Starting it again while it runs just opens
   the browser.
-- **Plain HTTP is safe here** because it listens on 127.0.0.1 only: nothing
-  outside your computer can reach it. Use `127.0.0.1` exactly, not
-  `localhost`, which answers *400 Invalid host header*.
+- **Plain HTTP is safe here** because it listens on 127.0.0.2 only: nothing
+  outside your computer can reach it. Use `127.0.0.2` exactly, not
+  `localhost`, which answers *400 Invalid host header*. It is `127.0.0.2`
+  rather than `127.0.0.1` so that signing in to IguanaXterm does not sign you
+  out of Monguana (both are pytincture apps and share a cookie name).
 
 **First start:** sign in as **`admin`** with password **`change_me`** (a
 message box reminds you). Monguana then asks you to choose your own password,

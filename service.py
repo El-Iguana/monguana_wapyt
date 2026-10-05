@@ -82,8 +82,15 @@ PORT = int(os.getenv("PORT", "8766"))
 # The address uvicorn listens on. The container runs with host networking (a
 # database GUI has to reach servers on the host's loopback and LAN), and there
 # 0.0.0.0 would publish plain HTTP to the whole network: podman-run.sh sets
-# 127.0.0.1.
+# 127.0.0.2.
 BIND = os.getenv("MONGUANA_BIND", "0.0.0.0")
+# The loopback address Monguana is reached on: 127.0.0.2, not 127.0.0.1.
+# Browsers keep cookies per host, not per port, and every pytincture app names
+# its session cookie the same — so on 127.0.0.1 next to IguanaXterm, signing in
+# to one signs you out of the other. Linux and Windows answer on all of
+# 127.0.0.0/8; macOS needs `sudo ifconfig lo0 alias 127.0.0.2` or
+# MONGUANA_HOST=127.0.0.1.
+HOST = os.getenv("MONGUANA_HOST", "").strip() or "127.0.0.2"
 
 
 def canonical_origin() -> str:
@@ -91,7 +98,7 @@ def canonical_origin() -> str:
     The single origin this service is reached on. The default is the literal
     IP, not "localhost": pytincture's loopback check parses it as an address.
     """
-    return os.getenv("MONGUANA_CANONICAL_ORIGIN", f"http://127.0.0.1:{PORT}").rstrip("/")
+    return os.getenv("MONGUANA_CANONICAL_ORIGIN", f"http://{HOST}:{PORT}").rstrip("/")
 
 
 def _strip_port(value: str) -> str:
@@ -109,7 +116,7 @@ def allowed_hosts() -> tuple[str, ...]:
     if configured:
         hosts = [_strip_port(part.strip()) for part in configured.split(",") if part.strip()]
     else:
-        hosts = ["127.0.0.1"]
+        hosts = [HOST]
     canonical = urlsplit(canonical_origin()).hostname
     if canonical and canonical not in hosts:
         hosts.append(canonical)

@@ -9,7 +9,9 @@
 # compose.yaml's bridge network, host.docker.internal reaches only services
 # listening beyond loopback (INSTALL.md, "MongoDB on the same computer").
 #
-# Monguana then binds to 127.0.0.1 itself, so it is still not on the network.
+# Monguana then binds to 127.0.0.2 itself (its own loopback address, so its
+# sign-in cookie is not shared with IguanaXterm), so it is still not on the
+# network.
 # Docker Desktop (Windows, macOS) and Podman machines run containers in a VM,
 # where host networking means the VM's network: use compose.yaml there.
 
@@ -34,9 +36,9 @@ services:
       - .env
     environment:
       MONGUANA_DATA_DIR: /data
-      MONGUANA_BIND: 127.0.0.1
+      MONGUANA_BIND: ${MONGUANA_HOST:-127.0.0.2}
       PORT: ${MONGUANA_PORT:-8766}
-      MONGUANA_CANONICAL_ORIGIN: ${MONGUANA_CANONICAL_ORIGIN:-http://127.0.0.1:${MONGUANA_PORT:-8766}}
+      MONGUANA_CANONICAL_ORIGIN: ${MONGUANA_CANONICAL_ORIGIN:-http://${MONGUANA_HOST:-127.0.0.2}:${MONGUANA_PORT:-8766}}
       MONGUANA_ALLOWED_HOSTS: ${MONGUANA_ALLOWED_HOSTS:-}
     volumes:
       - monguana-data:/data

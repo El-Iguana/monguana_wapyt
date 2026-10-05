@@ -52,9 +52,14 @@ def health() -> int:
     import urllib.request
 
     port = os.getenv("PORT", "8766")
-    origin = os.getenv("MONGUANA_CANONICAL_ORIGIN", f"http://127.0.0.1:{port}")
-    host = urlsplit(origin).hostname or "127.0.0.1"
-    request = urllib.request.Request(f"http://127.0.0.1:{port}/healthz", headers={"Host": host})
+    loopback = os.getenv("MONGUANA_HOST", "").strip() or "127.0.0.2"
+    origin = os.getenv("MONGUANA_CANONICAL_ORIGIN", f"http://{loopback}:{port}")
+    host = urlsplit(origin).hostname or loopback
+    # With host networking the server listens on MONGUANA_BIND (say 127.0.0.2)
+    # and nothing answers on 127.0.0.1; in a bridged container it is 0.0.0.0.
+    bind = os.getenv("MONGUANA_BIND", "").strip()
+    target = "127.0.0.1" if bind in ("", "0.0.0.0", "::") else bind
+    request = urllib.request.Request(f"http://{target}:{port}/healthz", headers={"Host": host})
     try:
         with urllib.request.urlopen(request, timeout=4) as response:
             return 0 if response.status == 200 else 1

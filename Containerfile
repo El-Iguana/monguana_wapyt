@@ -90,7 +90,7 @@ VOLUME /data
 EXPOSE 8766
 
 # MONGUANA_BIND=0.0.0.0 inside the container is what makes a published port
-# work; publish it on the host as 127.0.0.1:8766 (see compose.yaml).
+# work; publish it on the host as 127.0.0.2:8766 (see compose.yaml).
 ENV MONGUANA_DATA_DIR=/data \
     MONGUANA_TINYMONGO_ROOT=/tinymongo \
     MONGUANA_BIND=0.0.0.0 \

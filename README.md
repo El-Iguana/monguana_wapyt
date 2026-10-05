@@ -142,7 +142,7 @@ cp .env.example .env              # set MONGUANA_ADMIN_PASS
 docker compose up -d --build      # or: podman compose up -d --build
 ```
 
-Then open <http://127.0.0.1:8766/monguana> — `127.0.0.1`, not `localhost` —
+Then open <http://127.0.0.2:8766/monguana> — `127.0.0.2`, not `localhost` —
 and sign in as `admin`. tinymongo is on in the container, with its stores on
 the `monguana-tinymongo` volume; add its DuckDB and Parquet engines, or
 plugins, with `MONGUANA_EXTRA_PACKAGES` in `.env`.
@@ -176,9 +176,10 @@ folder. More in the wiki's [Development](https://github.com/El-Iguana/monguana_w
 | `MONGUANA_SESSION_SECRET` | generated | Cookie signing secret |
 | `MONGUANA_PORT` | `8766` | Port on the host, with compose |
 | `PORT` | `8766` | Listen port of the service itself |
-| `MONGUANA_BIND` | `0.0.0.0` | Listen address (the container sets `127.0.0.1`) |
-| `MONGUANA_CANONICAL_ORIGIN` | `http://127.0.0.1:PORT` | The one origin the app is reached on |
-| `MONGUANA_ALLOWED_HOSTS` | `127.0.0.1` | Host names accepted, comma-separated |
+| `MONGUANA_HOST` | `127.0.0.2` | Loopback address the app is reached on — its own, so its sign-in cookie is not shared with IguanaXterm on `127.0.0.1` (INSTALL.md, *Own loopback address*) |
+| `MONGUANA_BIND` | `0.0.0.0` | Listen address (host networking sets `MONGUANA_HOST`) |
+| `MONGUANA_CANONICAL_ORIGIN` | `http://MONGUANA_HOST:PORT` | The one origin the app is reached on |
+| `MONGUANA_ALLOWED_HOSTS` | `MONGUANA_HOST` | Host names accepted, comma-separated |
 | `MONGUANA_MAX_RESTORE_BYTES` | 1 GiB | Largest dump ZIP accepted |
 | `MONGUANA_UPDATE_CHECK` | `on` | `off` stops the server asking GitHub whether a newer release is out (About, and the toolbar's *Update* badge) |
 | `MONGUANA_TINYMONGO_ROOT` | container `/tinymongo`; unset from source (off) | The only folder tinymongo connections may open |
