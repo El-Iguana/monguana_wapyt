@@ -461,8 +461,8 @@ results, `check()` for cooperative cancel); the page polls
 - **Modals are closed, not hidden.** wapyt's `hide()` leaves the overlay in the
   DOM; `close()` removes it. Every modal here is built with
   `ModalConfig(dispose_on_close=True)` (wapyt, 2026-09-25), so ×, Escape and a
-  backdrop click remove it too. wapyt's modal also sets no font, hence the
-  `.wapyt-modal` rule in `_CSS`.
+  backdrop click remove it too. Their font comes from wapyt's
+  `--wapyt-font-family` (wa_pytincture_widgetset#21); there is no app rule.
 - **Per-user settings and view state** go through `UiStateService`:
   `settings` (`show_system`: `system.*` collections, hidden by default,
   toggled from a server's or database's menu), `columns:<conn>:<db>:<coll>`

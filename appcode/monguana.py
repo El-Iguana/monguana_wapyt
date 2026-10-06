@@ -5177,8 +5177,6 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
   .mg-summary{display:none;}
 }
 
-/* wapyt's modal sets no font of its own, so it fell back to the serif default. */
-.wapyt-modal{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
 .mg-dialog{display:flex;flex-direction:column;gap:10px;}
 .mg-test-row{display:flex;align-items:center;gap:10px;padding-top:4px;}
 .mg-test-result{font:12.5px ui-monospace,Menlo,Consolas,monospace;color:var(--mg-muted);}
