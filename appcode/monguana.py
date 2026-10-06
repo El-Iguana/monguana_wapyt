@@ -38,6 +38,7 @@ from wapyt import (
     FormConfig,
     LayoutConfig,
     MainWindow,
+    message,
     ModalConfig,
     ModalWindow,
     SelectOption,
@@ -844,7 +845,7 @@ class Monguana(MainWindow):
         else:
             self._dbs.pop(conn_id, None)
             self._errors[node] = f"⚠ {result.get('error', 'Could not connect')}"
-            self._toast(result.get("error", "Could not connect"))
+            self._toast(result.get("error", "Could not connect"), kind="error")
         self._rebuild_tree()
 
     async def _load_collections(self, conn_id: int, db: str) -> None:
@@ -930,7 +931,7 @@ class Monguana(MainWindow):
         elif action == "refresh":
             _spawn(self._refresh_all(), "refresh")
         elif not conn_id:
-            self._toast("Select a connection first.")
+            self._toast("Select a connection first.", kind="warning")
         elif action == "edit_conn":
             _spawn(self._connection_editor(conn_id), "connection editor")
         elif action == "dashboard":
@@ -961,10 +962,10 @@ class Monguana(MainWindow):
         try:
             response = await js.fetch(f"/{application}/auth/logout", options)
         except Exception:  # noqa: BLE001
-            self._toast("Could not sign out.")
+            self._toast("Could not sign out.", kind="error")
             return
         if not response.ok:
-            self._toast("Could not sign out.")
+            self._toast("Could not sign out.", kind="error")
             return
         js.window.location.assign(f"/{application}/login")
 
@@ -983,14 +984,14 @@ class Monguana(MainWindow):
         if conn_id:
             existing = await ConnectionService().get_async(conn_id)
             if not existing:
-                self._toast("Connection not found.")
+                self._toast("Connection not found.", kind="error")
                 return
         existing = {**existing, **(carry or {})}
         available = await ConnectionService().backends_async()
         chosen = existing.get("backend") or backend or "mongodb"
         spec = next((item for item in available if item["name"] == chosen), None)
         if spec is None:
-            self._toast(f"The {chosen!r} backend is not installed.")
+            self._toast(f"The {chosen!r} backend is not installed.", kind="error")
             return
         is_mongo = spec["fields"] is None
         stored_options = existing.get("options") or {}
@@ -1175,7 +1176,7 @@ class Monguana(MainWindow):
     async def _duplicate_connection(self, conn_id: int) -> None:
         result = await ConnectionService().duplicate_async(conn_id)
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not duplicate"))
+            self._toast(result.get("error", "Could not duplicate"), kind="error")
             return
         await self._reload_connections()
 
@@ -1183,11 +1184,14 @@ class Monguana(MainWindow):
         conn = self._conn(conn_id)
         if conn is None:
             return
-        if not js.confirm(f"Delete the connection “{conn['name']}”?\n\nThe server is not touched."):
+        if not await message.confirm(
+            f"Delete the connection “{conn['name']}”?\n\nThe server is not touched.",
+            title="Delete connection", ok_text="Delete", danger=True,
+        ):
             return
         result = await ConnectionService().delete_async(conn_id)
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not delete"))
+            self._toast(result.get("error", "Could not delete"), kind="error")
             return
         for tid in [tid for tid, view in self._views.items() if view["conn"] == conn_id]:
             self._close_view(tid)
@@ -1237,22 +1241,23 @@ class Monguana(MainWindow):
         form.focus_first()
 
     async def _drop_database(self, conn_id: int, db: str) -> None:
-        typed = js.prompt(
+        typed = await message.prompt(
             f"Drop database “{db}” and every collection in it?\n\n"
-            "This cannot be undone. Type the database name to confirm:"
+            "This cannot be undone. Type the database name to confirm:",
+            title="Drop database", ok_text="Drop", placeholder=db,
         )
         if typed is None or not typed:
             return
         if str(typed) != db:
-            self._toast("The name did not match; nothing was dropped.")
+            self._toast("The name did not match; nothing was dropped.", kind="warning")
             return
         result = await MongoService().drop_database_async(conn_id, db)
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not drop"))
+            self._toast(result.get("error", "Could not drop"), kind="error")
             return
         for tid in [tid for tid, v in self._views.items() if v["conn"] == conn_id and v["db"] == db]:
             self._close_view(tid)
-        self._toast(f"Dropped {db}.")
+        self._toast(f"Dropped {db}.", kind="success")
         await self._refresh_server(conn_id)
 
     async def _create_collection_dialog(self, conn_id: int, db: str) -> None:
@@ -1295,12 +1300,14 @@ class Monguana(MainWindow):
         form.focus_first()
 
     async def _rename_collection(self, conn_id: int, db: str, coll: str) -> None:
-        new_name = js.prompt(f"Rename {db}.{coll} to:", coll)
+        new_name = await message.prompt(
+            f"Rename {db}.{coll} to:", title="Rename collection", value=coll, ok_text="Rename",
+        )
         if not new_name or str(new_name) == coll:
             return
         result = await MongoService().rename_collection_async(conn_id, db, coll, str(new_name))
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not rename"))
+            self._toast(result.get("error", "Could not rename"), kind="error")
             return
         for tid, view in self._views.items():
             if (view["conn"], view["db"], view["coll"]) == (conn_id, db, coll):
@@ -1311,11 +1318,14 @@ class Monguana(MainWindow):
         await self._load_collections(conn_id, db)
 
     async def _drop_collection(self, conn_id: int, db: str, coll: str) -> None:
-        if not js.confirm(f"Drop {db}.{coll} and all its documents and indexes?\n\nThis cannot be undone."):
+        if not await message.confirm(
+            f"Drop {db}.{coll} and all its documents and indexes?\n\nThis cannot be undone.",
+            title="Drop collection", ok_text="Drop", danger=True,
+        ):
             return
         result = await MongoService().drop_collection_async(conn_id, db, coll)
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not drop"))
+            self._toast(result.get("error", "Could not drop"), kind="error")
             return
         for tid in [tid for tid, v in self._views.items()
                     if (v["conn"], v["db"], v["coll"]) == (conn_id, db, coll)]:
@@ -1325,7 +1335,7 @@ class Monguana(MainWindow):
     async def _stats_dialog(self, conn_id: int, db: str, coll: str) -> None:
         result = await MongoService().stats_async(conn_id, db, coll)
         if not result.get("ok"):
-            self._toast(result.get("error", "No statistics"))
+            self._toast(result.get("error", "No statistics"), kind="error")
             return
         def size(key: str) -> str:
             # None: the backend has no $collStats, so no sizes (phase 39).
@@ -1415,7 +1425,7 @@ class Monguana(MainWindow):
         def _edit(name: str) -> None:
             index = indexes.get(name)
             if name == "_id_":
-                self._toast("The _id index cannot be changed.")
+                self._toast("The _id index cannot be changed.", kind="warning")
             elif index is not None:
                 _spawn(self._index_editor(conn_id, db, coll, index, _refresh), "edit index")
 
@@ -1429,18 +1439,20 @@ class Monguana(MainWindow):
             async def _run() -> None:
                 service = MongoService()
                 if action == "drop":
-                    if not js.confirm(f"Drop index {name}?"):
+                    if not await message.confirm(
+                        f"Drop index {name}?", title="Drop index", ok_text="Drop", danger=True,
+                    ):
                         return
                     result = await service.drop_index_async(conn_id, db, coll, name)
                 elif action == "hide":
                     hidden = not (indexes.get(name) or {}).get("hidden")
                     result = await service.set_index_hidden_async(conn_id, db, coll, name, hidden)
                     if result.get("ok"):
-                        self._toast(f"{name} is {'hidden from' if hidden else 'visible to'} the query planner.")
+                        self._toast(f"{name} is {'hidden from' if hidden else 'visible to'} the query planner.", kind="success")
                 else:
                     return
                 if not result.get("ok"):
-                    self._toast(result.get("error", "Failed"))
+                    self._toast(result.get("error", "Failed"), kind="error")
                 await _refresh()
 
             _spawn(_run(), f"index {action}")
@@ -1470,7 +1482,7 @@ class Monguana(MainWindow):
                     return
                 form.set_values({"keys": "", "name": "", "ttl": "", "partial": "", "options": "",
                                  "unique": False, "sparse": False, "hidden": False})
-                self._toast(f"Created index {result['name']}.")
+                self._toast(f"Created index {result['name']}.", kind="success")
                 await _refresh()
             finally:
                 form.set_busy(False)
@@ -1604,7 +1616,7 @@ class Monguana(MainWindow):
                 return
             modal.close()
             done = "rebuilt" if result["strategy"] != "in-place" else "updated"
-            self._toast(f"Index {result['name']} {done}: {', '.join(result['changes'])}.")
+            self._toast(f"Index {result['name']} {done}: {', '.join(result['changes'])}.", kind="success")
             await refresh()
 
         def _on_click(event) -> None:
@@ -1917,13 +1929,13 @@ class Monguana(MainWindow):
             if self._query(tid).get(role) == text:
                 self._set_text(f"{tid}-{role}", "{" + stripped + "}")
 
-    def _status(self, tid: str, message: str = "", kind: str = "error") -> None:
+    def _status(self, tid: str, text: str = "", kind: str = "error") -> None:
         status = _el(f"{tid}-status")
         if not status:
             return
-        status.hidden = not message
+        status.hidden = not text
         status.dataset.kind = kind
-        status.textContent = message
+        status.textContent = text
 
     def _on_view_action(self, tid: str, action: str, button) -> None:
         view = self._views[tid]
@@ -2412,7 +2424,7 @@ class Monguana(MainWindow):
         elif action == "qb_apply":
             text = self._qb_preview(tid)
             if text is None:
-                self._toast("Fix the highlighted condition first.")
+                self._toast("Fix the highlighted condition first.", kind="warning")
                 return
             self._set_text(f"{tid}-filter", text)
             state["source"], state["note"] = text, ""
@@ -2512,7 +2524,7 @@ class Monguana(MainWindow):
         if action == "st_run":
             stage = stages[index]
             if not stage["enabled"]:
-                self._toast("That stage is disabled; enable it to run up to it.")
+                self._toast("That stage is disabled; enable it to run up to it.", kind="warning")
                 return
             label = f"After stage {index + 1} ({stage['op']})"
             _spawn(self._aggregate(tid, compose_pipeline(stages, upto=index), label), "run to stage")
@@ -2960,11 +2972,11 @@ class Monguana(MainWindow):
         view["columns_gen"] = view.get("columns_gen", 0) + 1
         result = await UiStateService().clear_async(self._columns_key(view))
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not reset the columns"))
+            self._toast(result.get("error", "Could not reset the columns"), kind="error")
             return
         if view["shown"] == "table":
             self._render_table(tid)
-        self._toast("Column widths and order reset.")
+        self._toast("Column widths and order reset.", kind="success")
 
     # -- documents -------------------------------------------------------
 
@@ -2972,12 +2984,12 @@ class Monguana(MainWindow):
         view = self._views[tid]
         if view["readonly"]:
             if not quiet:
-                self._toast("These results are read-only. Switch to find to edit.")
+                self._toast("These results are read-only. Switch to find to edit.", kind="warning")
             return None
         ids = view["table"].get_selected_ids() if view["shown"] == "table" else []
         if len(ids) != 1:
             if not quiet:
-                self._toast("Select one document in the table first.")
+                self._toast("Select one document in the table first.", kind="warning")
             return None
         return view["docs"][int(ids[0])]
 
@@ -3008,7 +3020,7 @@ class Monguana(MainWindow):
             _spawn(self._copy_text(to_pretty(row["doc"])), "copy")
             return
         if view["readonly"] or row.get("id") is None:
-            self._toast("These results are read-only.")
+            self._toast("These results are read-only.", kind="warning")
             return
         if action == "edit":
             _spawn(self._edit_document(tid, row), "edit")
@@ -3024,14 +3036,14 @@ class Monguana(MainWindow):
     async def _copy_text(self, text: str) -> None:
         try:
             await js.navigator.clipboard.writeText(text)
-            self._toast("Copied.")
+            self._toast("Copied.", kind="success")
         except Exception:  # noqa: BLE001 - a browser may refuse without a gesture
-            self._toast("The browser refused clipboard access.")
+            self._toast("The browser refused clipboard access.", kind="error")
 
     async def _insert_document(self, tid: str) -> None:
         view = self._views[tid]
         if view["kind"] == "view":
-            self._toast("Views are read-only.")
+            self._toast("Views are read-only.", kind="warning")
             return
         await self._document_editor(
             tid, title=f"Insert into {view['coll']}",
@@ -3048,7 +3060,7 @@ class Monguana(MainWindow):
         # hidden fields, and saving the projected copy would delete them.
         result = await MongoService().get_document_async(view["conn"], view["db"], view["coll"], row["id"])
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not load the document"))
+            self._toast(result.get("error", "Could not load the document"), kind="error")
             return
         await self._document_editor(
             tid, title="Edit document", text=to_shell(result["doc"]),
@@ -3062,7 +3074,7 @@ class Monguana(MainWindow):
         view = self._views[tid]
         result = await MongoService().get_document_async(view["conn"], view["db"], view["coll"], row["id"])
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not load the document"))
+            self._toast(result.get("error", "Could not load the document"), kind="error")
             return
         doc = dict(result["doc"])
         doc.pop("_id", None)
@@ -3113,7 +3125,7 @@ class Monguana(MainWindow):
                 error.textContent = result.get("error", "Could not save")
                 return
             _close()
-            self._toast(done(result))
+            self._toast(done(result), kind="success")
             if tid in self._views:
                 await self._run(tid)
 
@@ -3165,12 +3177,12 @@ class Monguana(MainWindow):
     def _selected_rows(self, tid: str) -> list:
         view = self._views[tid]
         if view["readonly"]:
-            self._toast("These results are read-only.")
+            self._toast("These results are read-only.", kind="warning")
             return []
         rows = [view["docs"][int(i)] for i in view["table"].get_selected_ids()]
         rows = [row for row in rows if row.get("id") is not None]
         if not rows:
-            self._toast("Select documents in the table first (Ctrl/Shift+click for several).")
+            self._toast("Select documents in the table first (Ctrl/Shift+click for several).", kind="warning")
         return rows
 
     async def _delete_selected(self, tid: str) -> None:
@@ -3182,7 +3194,10 @@ class Monguana(MainWindow):
         view = self._views[tid]
         preview = "\n".join(f"  {scalar_text(row['doc'].get('_id'))}" for row in rows[:8])
         more = f"\n  … and {len(rows) - 8} more" if len(rows) > 8 else ""
-        if not js.confirm(f"Delete {len(rows)} document(s) from {view['coll']}?\n\n{preview}{more}"):
+        if not await message.confirm(
+            f"Delete {len(rows)} document(s) from {view['coll']}?\n\n{preview}{more}",
+            title="Delete documents", ok_text="Delete", danger=True,
+        ):
             return
         if len(rows) == 1:
             result = await MongoService().delete_document_async(
@@ -3191,9 +3206,9 @@ class Monguana(MainWindow):
             result = await MongoService().bulk_delete_async(
                 view["conn"], view["db"], view["coll"], [row["id"] for row in rows])
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not delete"))
+            self._toast(result.get("error", "Could not delete"), kind="error")
             return
-        self._toast(f"Deleted {result.get('deleted', 0)} document(s).")
+        self._toast(f"Deleted {result.get('deleted', 0)} document(s).", kind="success")
         view["table"].clear_selection()
         await self._run(tid)
 
@@ -3278,19 +3293,19 @@ class Monguana(MainWindow):
                 outcome = await service.update_where_async(
                     view["conn"], view["db"], view["coll"], query["filter"], query["update"],
                     multi, upsert)
-                message = (f"Matched {outcome.get('matched', 0):,}, modified "
+                summary = (f"Matched {outcome.get('matched', 0):,}, modified "
                            f"{outcome.get('modified', 0):,}"
                            + (", upserted 1" if outcome.get("upserted") else "") + ".")
             else:
                 outcome = await service.delete_where_async(
                     view["conn"], view["db"], view["coll"], query["filter"], multi, empty_filter)
-                message = f"Deleted {outcome.get('deleted', 0):,} document(s)."
+                summary = f"Deleted {outcome.get('deleted', 0):,} document(s)."
             modal.close()
             if not outcome.get("ok"):
                 self._status(tid, outcome.get("error", "Failed"))
                 return
-            self._toast(message)
-            self._status(tid, message, "info")
+            self._toast(summary, kind="success")
+            self._status(tid, summary, "info")
             # Back to find, so the result of the write is what is on screen.
             _el(f"{tid}-mode").value = "find"
             self._apply_mode(tid, "find")
@@ -3421,8 +3436,9 @@ class Monguana(MainWindow):
             return
         total = check["total"]
         limit = 100_000 if fmt == "csv" else 1_000_000
-        if total > limit and not js.confirm(
-            f"{total:,} documents match; the export stops at {limit:,}. Continue?"
+        if total > limit and not await message.confirm(
+            f"{total:,} documents match; the export stops at {limit:,}. Continue?",
+            title="Export", ok_text="Export",
         ):
             return
         params = {
@@ -3475,8 +3491,9 @@ class Monguana(MainWindow):
                 form.set_error(None, "Choose a ZIP file first.")
                 return
             upload = files.item(0)
-            if values.get("mode") == "drop" and not js.confirm(
-                "Drop every collection in the archive before restoring it?"
+            if values.get("mode") == "drop" and not await message.confirm(
+                "Drop every collection in the archive before restoring it?",
+                title="Restore", ok_text="Drop and restore", danger=True,
             ):
                 return
             form.set_busy(True)
@@ -3599,7 +3616,7 @@ class Monguana(MainWindow):
     async def _start_dump(self, conn_id: int, db: str, coll: str) -> None:
         result = await JobService().start_dump_async(conn_id, db, coll)
         if not result.get("ok"):
-            self._toast(result.get("error", "Could not start the dump"))
+            self._toast(result.get("error", "Could not start the dump"), kind="error")
             return
         title = f"Dump {db}.{coll}" if coll else f"Dump {db}"
         await self._job_console(result["job"], title, "dump", conn_id)
@@ -3708,9 +3725,9 @@ class Monguana(MainWindow):
 
         if status["state"] == "done" and kind == "dump" and status.get("download"):
             _download(download_url)
-            self._toast(f"{title}: done, downloading.")
+            self._toast(f"{title}: done, downloading.", kind="success")
         elif status["state"] == "done":
-            self._toast(f"{title}: done.")
+            self._toast(f"{title}: done.", kind="success")
         if kind in ("restore", "copy"):
             # For a copy, conn_id is the target.
             await self._refresh_server(conn_id)
@@ -3752,7 +3769,7 @@ class Monguana(MainWindow):
                     return
                 modal.close()
                 self._me["must_change_password"] = False
-                self._toast("Password changed.")
+                self._toast("Password changed.", kind="success")
             finally:
                 form.set_busy(False)
 
@@ -3762,7 +3779,7 @@ class Monguana(MainWindow):
 
     async def _admin_panel(self) -> None:
         if not self._me.get("is_admin"):
-            self._toast("Administrator access required.")
+            self._toast("Administrator access required.", kind="error")
             return
         modal = ModalWindow(ModalConfig(dispose_on_close=True, title="Users", width=760, height=560))
         modal.body.innerHTML = (
@@ -3802,13 +3819,19 @@ class Monguana(MainWindow):
             async def _run() -> None:
                 service = UserService()
                 if action == "delete":
-                    if not js.confirm(f"Delete “{row.get('username')}” and their saved connections?"):
+                    if not await message.confirm(
+                        f"Delete “{row.get('username')}” and their saved connections?",
+                        title="Delete user", ok_text="Delete", danger=True,
+                    ):
                         return
                     result = await service.delete_async(int(user_id))
                 elif action == "toggle_admin":
                     result = await service.set_admin_async(int(user_id), not row.get("is_admin"))
                 elif action == "reset":
-                    new_password = js.prompt(f"New password for {row.get('username')} (min 8 chars):")
+                    new_password = await message.prompt(
+                        f"New password for {row.get('username')} (min 8 chars):",
+                        title="Reset password", ok_text="Reset", password=True,
+                    )
                     if not new_password:
                         return
                     result = await service.reset_password_async(int(user_id), str(new_password))
@@ -3817,7 +3840,7 @@ class Monguana(MainWindow):
                 if not result.get("ok"):
                     self._toast(result.get("error")
                                 or "; ".join((result.get("errors") or {}).values())
-                                or "Action failed")
+                                or "Action failed", kind="error")
                 await _refresh()
 
             _spawn(_run(), f"admin {action}")
@@ -3997,12 +4020,12 @@ class Monguana(MainWindow):
         self._discard_dash(tid)
         self.tabs.remove_tab(tid)
 
-    def _dash_status(self, tid: str, message: str = "", kind: str = "error") -> None:
+    def _dash_status(self, tid: str, text: str = "", kind: str = "error") -> None:
         box = _el(f"{tid}-status")
         if box:
-            box.textContent = message
+            box.textContent = text
             box.dataset.kind = kind
-            box.hidden = not message
+            box.hidden = not text
 
     def _dash_action(self, tid: str, action: str, button) -> None:
         dash = self._dashes[tid]
@@ -4045,7 +4068,7 @@ class Monguana(MainWindow):
 
     def _open_dashboard(self, conn_id) -> None:
         if conn_id is None:
-            self._toast("Select a connection first.")
+            self._toast("Select a connection first.", kind="warning")
             return
         conn_id = int(conn_id)
         existing = self._find_dash("dashboard", conn_id)
@@ -4298,19 +4321,21 @@ class Monguana(MainWindow):
         opid = str(payload.get("id") or "")
         op = (dash.get("ops") or {}).get(opid)
         if op is None:
-            self._toast("That operation is no longer listed.")
+            self._toast("That operation is no longer listed.", kind="warning")
             return
         about = " · ".join(part for part in (
             op.get("op"), op.get("ns"), op.get("app"), op.get("client")) if part)
-        if not js.confirm(f"Kill operation {opid}?\n\n{about}\n{op.get('query', '')[:200]}\n\n"
-                          "Its client gets an error. A write may have changed some "
-                          "documents already; those changes stay."):
-            return
-
         async def _kill() -> None:
+            if not await message.confirm(
+                f"Kill operation {opid}?\n\n{about}\n{op.get('query', '')[:200]}\n\n"
+                "Its client gets an error. A write may have changed some "
+                "documents already; those changes stay.",
+                title="Kill operation", ok_text="Kill", danger=True,
+            ):
+                return
             result = await MongoService().kill_op_async(dash["conn"], opid)
             if not result.get("ok"):
-                self._toast(result.get("error", "Could not kill the operation"))
+                self._toast(result.get("error", "Could not kill the operation"), kind="error")
                 return
             self._toast(f"Asked the server to kill operation {opid}.")
             # It stops at its next interrupt check; look again shortly.
@@ -4374,9 +4399,9 @@ class Monguana(MainWindow):
             async def _set() -> None:
                 result = await MongoService().set_profiler_async(dash["conn"], db, int(action[-1]))
                 if not result.get("ok"):
-                    self._toast(result.get("error", "Could not change the profiler"))
+                    self._toast(result.get("error", "Could not change the profiler"), kind="error")
                     return
-                self._toast(f"{db}: {_profile_sentence(result)}")
+                self._toast(f"{db}: {_profile_sentence(result)}", kind="success")
                 await self._after_profiler_change(dash["conn"], db, result)
 
             _spawn(_set(), "profiler level")
@@ -4401,7 +4426,7 @@ class Monguana(MainWindow):
             self.tabs.set_active(existing)
             return
         if "profiler" not in self._caps(conn_id):
-            self._toast("This connection's backend has no query profiler.")
+            self._toast("This connection's backend has no query profiler.", kind="warning")
             return
         conn = self._conn(conn_id) or {}
         tid, container = self._new_tab(f"{db} · profiler")
@@ -4640,7 +4665,7 @@ class Monguana(MainWindow):
                 error.textContent = result.get("error", "Could not set the filter")
                 return
             _close()
-            self._toast(f"{dash['db']}: profile filter {'set' if result.get('filter') else 'removed'}.")
+            self._toast(f"{dash['db']}: profile filter {'set' if result.get('filter') else 'removed'}.", kind="success")
             self._profiler_settings(tid, result)
 
         def _on_click(event) -> None:
@@ -4709,14 +4734,15 @@ class Monguana(MainWindow):
             return
         self._dash_status(tid)
         if level == 2:
-            self._toast("Recording every operation slows the server. Turn it off when done.")
+            self._toast("Recording every operation slows the server. Turn it off when done.", kind="warning")
         await self._after_profiler_change(dash["conn"], dash["db"], result)
         await self._profiler_rows(tid)
 
     async def _profiler_clear(self, tid: str) -> None:
         dash = self._dashes.get(tid)
-        if dash is None or not js.confirm(
-                f"Delete everything the profiler recorded in {dash['db']}?"):
+        if dash is None or not await message.confirm(
+                f"Delete everything the profiler recorded in {dash['db']}?",
+                title="Clear profiler", ok_text="Delete", danger=True):
             return
         result = await MongoService().profiler_clear_async(dash["conn"], dash["db"])
         if not result.get("ok"):
@@ -4782,7 +4808,7 @@ class Monguana(MainWindow):
         dash, row = self._dashes.get(tid), self._profiled_row(tid, rid)
         spec = (row or {}).get("open")
         if not spec:
-            self._toast("Only a find or an aggregate can be opened in a query tab.")
+            self._toast("Only a find or an aggregate can be opened in a query tab.", kind="warning")
             return
         known = {item["name"]: item for item in self._colls.get((dash["conn"], dash["db"])) or []}
         kind = "view" if (known.get(spec["coll"]) or {}).get("type") == "view" else "collection"
@@ -4854,19 +4880,8 @@ class Monguana(MainWindow):
         modal.body.addEventListener("click", proxy)
         modal.show()
 
-    def _toast(self, message: str) -> None:
-        holder = _el("mg-toast")
-        if not holder:
-            holder = js.document.createElement("div")
-            holder.id = "mg-toast"
-            holder.className = "mg-toast"
-            js.document.body.appendChild(holder)
-        holder.textContent = message
-        holder.dataset.visible = "true"
-        js.window.clearTimeout(getattr(self, "_toast_timer", 0) or 0)
-        self._toast_timer = js.window.setTimeout(
-            create_proxy(lambda: holder.removeAttribute("data-visible")), 4000
-        )
+    def _toast(self, text: str, kind: str = "info") -> None:
+        message.toast(text, kind=kind)
 
 
 # -- dashboard and profiler: pure helpers ----------------------------------
@@ -5296,11 +5311,4 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .wapyt-datatable-cell-icon.mdi-circle-outline{color:#64748b;}
 .wapyt-datatable-cell-icon.mdi-alert{color:#f87171;}
 .wapyt-datatable-cell-icon.mdi-key{color:#34d399;}
-
-.mg-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(12px);
-  padding:10px 18px;border-radius:8px;background:#1e293b;color:var(--mg-text);
-  border:1px solid var(--mg-line-2);font:13px system-ui,sans-serif;
-  box-shadow:0 8px 24px rgba(0,0,0,.4);opacity:0;pointer-events:none;
-  transition:opacity .18s,transform .18s;z-index:10000;max-width:70vw;}
-.mg-toast[data-visible]{opacity:1;transform:translateX(-50%) translateY(0);}
 """

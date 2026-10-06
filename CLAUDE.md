@@ -450,6 +450,14 @@ results, `check()` for cooperative cancel); the page polls
   order instead of re-ordering a page of mixed BSON types by text.
   `_sync_table_sort` moves the caret to match a sort typed by hand, with a
   guard flag because `DataTable.sort()` emits `sort` itself.
+- **Toasts and dialogs come from `wapyt.message`** (wa_pytincture_widgetset#22):
+  `self._toast(text, kind=...)` delegates to `message.toast` with `info` /
+  `success` / `warning` / `error`, and every confirm or prompt is
+  `await message.confirm(...)` / `await message.prompt(...)` with a title, an
+  action-named OK button and `danger=True` when destructive. Never
+  `js.confirm` / `js.prompt`: they block the page and can't be styled. The
+  method that asks must be `async`; `_dash_op_action` stays a sync handler by
+  asking inside the `_kill()` coroutine it spawns.
 - **Modals are closed, not hidden.** wapyt's `hide()` leaves the overlay in the
   DOM; `close()` removes it. Every modal here is built with
   `ModalConfig(dispose_on_close=True)` (wapyt, 2026-09-25), so ×, Escape and a
