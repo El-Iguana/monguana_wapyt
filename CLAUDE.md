@@ -425,6 +425,12 @@ results, `check()` for cooperative cancel); the page polls
   `DATA_DIR/jobs/` and `POST /mg/restore` answers with the job id at once.
   Progress is bytes of each `.bson` member read (through `_Counting`); what was
   restored before a cancel is kept as the result.
+- **The bars are wapyt's** (wa_pytincture_widgetset#28). Each console item is
+  `progress_html(..., text=amount, state=…)` rebuilt per poll (job state
+  running/done/failed/cancelled → active/done/error/paused), the restore
+  upload is a live compact `ProgressBar`, and the dashboard tile meters are
+  `progress_html` with the label visually hidden (the tile headline already
+  shows the value) and `--wapyt-progress-fill` set to `--mg-accent`.
 - Finished jobs and their files are dropped after an hour (`purge`), leftovers
   from a previous process at startup (`clear_leftovers`), a cancelled or
   failed dump's partial file at once. At most 3 running jobs per user.

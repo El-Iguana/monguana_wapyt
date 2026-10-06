@@ -41,6 +41,9 @@ from wapyt import (
     message,
     ModalConfig,
     ModalWindow,
+    progress_html,
+    ProgressBar,
+    ProgressBarConfig,
     SelectOption,
     TabConfig,
     TableAction,
@@ -3492,11 +3495,17 @@ class Monguana(MainWindow):
                 return
             form.set_busy(True)
             result_el.hidden = False
+            result_el.textContent = ""
             size = format_bytes(upload.size)
+            bar_host = js.document.createElement("div")
+            result_el.appendChild(bar_host)
+            bar = ProgressBar(ProgressBarConfig(label=f"Uploading {upload.name}", max=max(1, int(upload.size)),
+                                                value_text=f"0%  of {size}", compact=True),
+                              container=bar_host)
 
             def _uploaded(sent: int, total: int) -> None:
                 percent = int(100 * sent / total) if total else 0
-                result_el.textContent = f"Uploading {size}… {percent}%"
+                bar.set_value(sent, total or None, text=f"{percent}%  of {size}")
 
             params = urlencode({"mode": values.get("mode", "skip"),
                                 "db": (values.get("db") or "").strip()})
@@ -3668,6 +3677,9 @@ class Monguana(MainWindow):
                 return "?"
             return format_bytes(value) if unit == "bytes" else f"{int(value):,}"
 
+        # Job item state -> wapyt progress state (and bar colour).
+        bar_state = {"running": "active", "done": "done", "failed": "error", "cancelled": "paused"}
+
         def _render(status: dict) -> None:
             rows = []
             for item in status["items"]:
@@ -3678,13 +3690,13 @@ class Monguana(MainWindow):
                 else:
                     percent = 100 if item["state"] != "running" else 0
                     amount = f"{_amount(done, unit)} {unit}"
+                # progress_html escapes the label and the text itself.
                 rows.append(
                     f'<div class="mg-console-item" data-state="{_esc(item["state"])}">'
-                    f'<span class="mg-console-label" title="{_esc(item["label"])}">{_esc(item["label"])}</span>'
-                    f'<span class="mg-console-track"><span class="mg-console-bar" style="width:{percent}%">'
-                    "</span></span>"
-                    f'<span class="mg-console-amount">{_esc(item.get("note") or amount)}</span>'
-                    "</div>"
+                    + progress_html(percent, 100, label=item["label"],
+                                    text=item.get("note") or amount,
+                                    state=bar_state.get(item["state"], "active"))
+                    + "</div>"
                 )
             items_el.innerHTML = "".join(rows) or '<div class="mg-hint">Starting…</div>'
             for line in status["log"]:
@@ -4884,8 +4896,9 @@ def _tile(label: str, value: str, sub: str = "", meter: float | None = None,
     """A stat tile: label, headline value, a muted line, and a meter or a sparkline."""
     bar = ""
     if meter is not None:
-        width = max(0.0, min(1.0, meter)) * 100
-        bar = f'<div class="mg-meter"><span style="width:{width:.1f}%"></span></div>'
+        # The headline already shows the number; the bar's label is only its
+        # accessible name (hidden visually in CSS).
+        bar = progress_html(max(0.0, min(1.0, meter)), 1, label=label, show_value=False)
     return (f'<div class="mg-tile"><div class="mg-tile-label">{_esc(label)}</div>'
             f'<div class="mg-tile-value">{_esc(value)}</div>'
             + (f'<div class="mg-tile-sub">{_esc(sub)}</div>' if sub else "")
@@ -5217,17 +5230,13 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .mg-console-state[data-state="cancelled"] .mdi{color:#fbbf24;}
 .mg-console-elapsed{color:var(--mg-dim);font:12px ui-monospace,Menlo,Consolas,monospace;}
 .mg-console-items{display:flex;flex-direction:column;gap:6px;max-height:40%;overflow:auto;flex:0 0 auto;}
-.mg-console-item{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(80px,1fr) minmax(0,1.2fr);
-  align-items:center;gap:10px;font-size:12.5px;}
-.mg-console-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mg-text);
+/* Each job item is a wapyt progress_html bar; these keep the console's
+   label | bar | amount columns lined up across rows. */
+.mg-console-item .wapyt-progress{gap:10px;font-size:12.5px;}
+.mg-console-item .wapyt-progress[data-compact] .wapyt-progress-label{flex:0 0 35%;max-width:none;color:var(--mg-text);
   font-family:ui-monospace,Menlo,Consolas,monospace;}
-.mg-console-track{height:6px;border-radius:3px;background:#1e293b;overflow:hidden;}
-.mg-console-bar{display:block;height:100%;border-radius:3px;background:#38bdf8;transition:width .3s linear;}
-.mg-console-item[data-state="done"] .mg-console-bar{background:#34d399;}
-.mg-console-item[data-state="failed"] .mg-console-bar{background:#f87171;}
-.mg-console-item[data-state="cancelled"] .mg-console-bar{background:#fbbf24;}
-.mg-console-amount{color:var(--mg-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font:12px ui-monospace,Menlo,Consolas,monospace;}
+.mg-console-item .wapyt-progress[data-compact] .wapyt-progress-value{flex:0 0 35%;opacity:1;color:var(--mg-muted);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;font:12px ui-monospace,Menlo,Consolas,monospace;}
 .mg-console-log{flex:1 1 auto;min-height:80px;}
 .mg-plan{padding:10px 12px;border-radius:6px;background:#0b1f1a;border:1px solid #065f46;
   display:flex;flex-direction:column;gap:6px;}
@@ -5255,12 +5264,14 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
 .mg-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;}
 .mg-tile{display:flex;flex-direction:column;gap:2px;min-width:0;padding:10px 12px;
   border:1px solid var(--mg-line);border-radius:8px;background:var(--mg-panel);}
+/* Stat-tile meter: a wapyt progress_html bar in Monguana's accent; the tile's
+   headline already shows the value, so the bar's label is only its name. */
+.mg-tile .wapyt-progress{margin-top:6px;--wapyt-progress-fill:var(--mg-accent);}
+.mg-tile .wapyt-progress-label{display:none;}
 .mg-tile-label{color:var(--mg-muted);font-size:11.5px;}
 .mg-tile-value{font:600 19px/1.25 system-ui,sans-serif;color:var(--mg-text);
   font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .mg-tile-sub{color:var(--mg-dim);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.mg-meter{height:6px;margin-top:6px;border-radius:3px;background:#1e293b;overflow:hidden;}
-.mg-meter span{display:block;height:100%;border-radius:3px;background:var(--mg-accent);}
 .mg-spark{display:block;width:100%;height:32px;margin-top:6px;overflow:visible;}
 .mg-spark-line{fill:none;stroke:var(--mg-accent);stroke-width:2;stroke-linejoin:round;
   stroke-linecap:round;vector-effect:non-scaling-stroke;}
