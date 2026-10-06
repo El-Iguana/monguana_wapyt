@@ -65,10 +65,6 @@ def register_mime_types() -> None:
 
 register_mime_types()
 
-import pytincture_compat  # noqa: E402
-
-pytincture_compat.apply()
-
 from pytincture import PytinctureConfig, create_app  # noqa: E402
 from pytincture.backend.middleware import RequestBodyLimitMiddleware  # noqa: E402
 
@@ -85,12 +81,16 @@ PORT = int(os.getenv("PORT", "8766"))
 # 127.0.0.2.
 BIND = os.getenv("MONGUANA_BIND", "0.0.0.0")
 # The loopback address Monguana is reached on: 127.0.0.2, not 127.0.0.1.
-# Browsers keep cookies per host, not per port, and every pytincture app names
-# its session cookie the same — so on 127.0.0.1 next to IguanaXterm, signing in
-# to one signs you out of the other. Linux and Windows answer on all of
-# 127.0.0.0/8; macOS needs `sudo ifconfig lo0 alias 127.0.0.2` or
-# MONGUANA_HOST=127.0.0.1.
+# Browsers keep cookies per host, not per port, and before pytincture 1.0.0rc13
+# every pytincture app named its session cookie the same, so on 127.0.0.1 next
+# to IguanaXterm signing in to one signed you out of the other. COOKIE_NAMESPACE
+# now prevents that on its own; the address stays so existing bookmarks and
+# launchers keep working. Linux and Windows answer on all of 127.0.0.0/8; macOS
+# needs `sudo ifconfig lo0 alias 127.0.0.2` or MONGUANA_HOST=127.0.0.1.
 HOST = os.getenv("MONGUANA_HOST", "").strip() or "127.0.0.2"
+# pytincture cookie_namespace (1.0.0rc13): session, CSRF and SAML cookies are
+# named monguana-* instead of pytincture-*. Changing it signs everyone out once.
+COOKIE_NAMESPACE = "monguana"
 
 
 def canonical_origin() -> str:
@@ -207,10 +207,13 @@ def build_app():
             trusted_proxy_headers=not loopback,
             max_request_body_bytes=max(max_restore_bytes(), _DEFAULT_BODY_LIMIT),
             environment=hooks,
+            # Own cookie names (monguana-dev-session over loopback HTTP,
+            # __Host-monguana-session over HTTPS), so a sign-in here no longer
+            # replaces another pytincture app's on the same host.
+            cookie_namespace=COOKIE_NAMESPACE,
         )
     )
 
-    pytincture_compat.apply_to_app(application)
     check_at_startup()
     application.add_middleware(LoginPageMiddleware)
     application.include_router(transfer_router)

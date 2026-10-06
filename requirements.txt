@@ -1,5 +1,5 @@
 # Server-side only. The browser gets Pyodide wheels via pytincture/micropip.
-pytincture @ git+https://github.com/pytincture/pytincture.git@v1.0.0rc10
+pytincture @ git+https://github.com/pytincture/pytincture.git@c02633323b08f2356a6768db83cd040f338caab7
 pymongo>=4.9
 bcrypt>=4.1.0
 cryptography>=42.0.0
