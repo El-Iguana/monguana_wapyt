@@ -15,7 +15,8 @@ re-explained.
 
 Siblings under `~/Development/Pytinc/`, each with its own `CLAUDE.md`:
 
-- `pytincture/` — the framework (pinned to tag `v1.0.0rc10`).
+- `pytincture/` — the framework, pinned to commit `c026333` (1.0.0rc13, untagged at the
+  time; swap `pyproject.toml` and `requirements.txt` to tag `v1.0.0rc13` once it exists).
 - `wa_pytincture_widgetset/` — **wapyt**. This app added `TreeAction(kinds=…)`
   (context-menu entries filtered by `node.data["kind"]`) so a server, a
   database and a collection get different menus.
@@ -27,7 +28,6 @@ The original Monguana is not checked out locally; clone it to compare.
 
 ```
 service.py                  # ASGI entrypoint: config, hooks, routes, static mount
-pytincture_compat.py        # pytincture workarounds per platform (Windows: see phase 38)
 appcode/                    # pytincture modules_path
   monguana.py               #   browser UI (Pyodide). APP_ENTRYPOINT lives here.
   services/
@@ -132,11 +132,8 @@ Traps, found building it:
   *directory* with `os.open()` to walk the path through directory descriptors;
   Windows refuses with `PermissionError`, before the function's fallback (it
   only catches `NotImplementedError`/`TypeError`) can apply.
-  `pytincture_compat.apply()` (called by `service.py` and `tests/conftest.py`)
-  takes that fallback up front where `os.open` lacks `dir_fd`: pytincture's
-  own `resolve_contained_path`, then open. Found by the first Windows CI run;
-  `tests/test_pytincture_compat.py` forces it on Linux. **Belongs upstream in
-  pytincture**; drop the patch once a release has it.
+  Fixed upstream in pytincture#377 (in 1.0.0rc13), so the
+  `pytincture_compat.py` patch that took the fallback up front is gone.
 - **Tests read source with `read_text()` and no encoding**, which is cp1252
   on Windows: always pass `encoding="utf-8"`.
 - **pip evaluates environment markers for the build machine, even with
@@ -217,13 +214,18 @@ on any browser console error. Screenshots land in `tests/smoke/` (ignored).
 - **wapyt installed non-editable** or the app boots with no widgets.
 - **pytincture will not serve authenticated plain HTTP** except on a literal
   loopback IP: use `http://127.0.0.2:8766`, never `localhost`.
-- **Monguana lives on 127.0.0.2, not 127.0.0.1** (`MONGUANA_HOST`). Cookies
-  are per host, not per port, and pytincture hard-codes the session cookie
-  name (`pytincture-dev-session` / `__Host-pytincture-session`), so next to
-  IguanaXterm on 127.0.0.1 each sign-in clobbered the other app's cookie —
-  "I keep having to log in again". macOS needs `ifconfig lo0 alias 127.0.0.2`
-  or `MONGUANA_HOST=127.0.0.1`. Drop this once pytincture lets an app name
-  its cookie.
+- **Cookies are namespaced** (`COOKIE_NAMESPACE = "monguana"` in `service.py`,
+  pytincture 1.0.0rc13 `cookie_namespace`): `monguana-dev-session` /
+  `monguana-dev-csrf` over loopback HTTP, `__Host-monguana-*` over HTTPS.
+  Before rc13 every pytincture app used `pytincture-*`, and next to IguanaXterm
+  on 127.0.0.1 each sign-in clobbered the other's cookie. App routes read
+  `request.session`, never a cookie by name. Changing the namespace signs
+  everyone out once.
+- **Monguana still lives on 127.0.0.2** (`MONGUANA_HOST`), the earlier fix for
+  the same clash, kept so bookmarks and the Windows launcher keep working.
+  Moving to 127.0.0.1 is now possible but needs INSTALL/README/launcher
+  changes. macOS needs `ifconfig lo0 alias 127.0.0.2` or
+  `MONGUANA_HOST=127.0.0.1`.
 - **2 MiB body cap on every route.** `BodyLimitExceptRestore` lifts it for
   `POST /mg/restore/<id>` only; that route authenticates and checks CSRF
   before reading a byte and enforces `MONGUANA_MAX_RESTORE_BYTES` while
@@ -231,14 +233,13 @@ on any browser console error. Screenshots land in `tests/smoke/` (ignored).
 - **No CDN, ever.** pytincture's CSP blocks it. This is why the original's
   Monaco and AG Grid are not here (see *Not built yet*).
 - **`JsNull` is not `None`.** Test DOM lookups for truthiness.
-- **pytincture's service worker is turned off** (`pytincture_compat`, all
-  platforms). Its scope is `/monguana/` but the page is `/monguana`, so it
-  never controls the page and the loader waited 5 s for it on every load
-  (7.5 s → 2.3 s without it). The patch must go on the backend
-  `create_app()` returns (`apply_to_app`): `create_app` loads a private copy
-  of `pytincture.backend.app`, so patching the imported module does nothing.
-  `test_the_template_still_needs_the_patch` fails once pytincture stops
-  hard-coding the worker on; then drop the patch.
+- **The page is `/monguana/`** (pytincture 1.0.0rc12+): `/monguana` redirects
+  there, so pytincture's service worker (scope `/monguana/`) now controls the
+  page. Before rc12 it never did and the loader waited 5 s for it on every
+  load, which `pytincture_compat` worked around by turning the worker off;
+  that patch is gone. Relative URLs now resolve under `/monguana/`: keep app
+  URLs absolute (`/static/…`, `/mg/…`, `/vendor/…`). `APP_FAVICON` is a
+  file path pytincture turns into an absolute URL, so it is unaffected.
 - **`dataset["for"]` does not work through Pyodide** — use
   `getAttribute("data-for")`.
 

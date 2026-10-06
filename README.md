@@ -176,7 +176,7 @@ folder. More in the wiki's [Development](https://github.com/El-Iguana/monguana_w
 | `MONGUANA_SESSION_SECRET` | generated | Cookie signing secret |
 | `MONGUANA_PORT` | `8766` | Port on the host, with compose |
 | `PORT` | `8766` | Listen port of the service itself |
-| `MONGUANA_HOST` | `127.0.0.2` | Loopback address the app is reached on — its own, so its sign-in cookie is not shared with IguanaXterm on `127.0.0.1` (INSTALL.md, *Own loopback address*) |
+| `MONGUANA_HOST` | `127.0.0.2` | Loopback address the app is reached on — its own, which kept its sign-in cookie apart from IguanaXterm's before Monguana's cookies were namespaced on `127.0.0.1` (INSTALL.md, *Own loopback address*) |
 | `MONGUANA_BIND` | `0.0.0.0` | Listen address (host networking sets `MONGUANA_HOST`) |
 | `MONGUANA_CANONICAL_ORIGIN` | `http://MONGUANA_HOST:PORT` | The one origin the app is reached on |
 | `MONGUANA_ALLOWED_HOSTS` | `MONGUANA_HOST` | Host names accepted, comma-separated |

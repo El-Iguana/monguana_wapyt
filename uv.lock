@@ -463,7 +463,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=4.1.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
     { name = "pymongo", specifier = ">=4.9" },
-    { name = "pytincture", git = "https://github.com/pytincture/pytincture.git?tag=v1.0.0rc10" },
+    { name = "pytincture", git = "https://github.com/pytincture/pytincture.git?rev=c02633323b08f2356a6768db83cd040f338caab7" },
     { name = "tinymongo", specifier = ">=1.3.1" },
     { name = "tinymongo", extras = ["duckdb"], marker = "extra == 'duckdb'", specifier = ">=1.3.1" },
     { name = "tinymongo", extras = ["parquet"], marker = "extra == 'parquet'", specifier = ">=1.3.1" },
@@ -697,8 +697,8 @@ wheels = [
 
 [[package]]
 name = "pytincture"
-version = "1.0.0rc10"
-source = { git = "https://github.com/pytincture/pytincture.git?tag=v1.0.0rc10#1ceaeac5534804f30c9e3ed47422adebd4ba2e69" }
+version = "1.0.0rc13"
+source = { git = "https://github.com/pytincture/pytincture.git?rev=c02633323b08f2356a6768db83cd040f338caab7#c02633323b08f2356a6768db83cd040f338caab7" }
 dependencies = [
     { name = "fastapi" },
     { name = "itsdangerous" },

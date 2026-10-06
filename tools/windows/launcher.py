@@ -49,9 +49,10 @@ HERE = Path(__file__).resolve().parent
 APPLICATION = "monguana"
 FIRST_PORT, LAST_PORT = 8766, 8799
 # Monguana's own loopback address. Browsers keep cookies per host, not per
-# port, and every pytincture app names its session cookie the same: on
-# 127.0.0.1 next to IguanaXterm (or any other pytincture app), signing in to
-# one signs you out of the other. Windows and Linux answer on all of
+# port; before pytincture 1.0.0rc13 every pytincture app named its session
+# cookie the same, so next to IguanaXterm on 127.0.0.1 signing in to one signed
+# you out of the other. service.py's cookie namespace now prevents that; the
+# address stays for existing shortcuts. Windows and Linux answer on all of
 # 127.0.0.0/8 with no setup.
 HOST = os.environ.get("MONGUANA_HOST", "").strip() or "127.0.0.2"
 START_TIMEOUT = 120  # seconds; the first start builds pytincture's browser assets

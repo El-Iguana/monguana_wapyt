@@ -196,9 +196,10 @@ in the toolbar.
 > other machines, see [section 8](#8-reaching-monguana-from-other-machines).
 
 > **Own loopback address.** Monguana uses `127.0.0.2` rather than `127.0.0.1`
-> because browsers keep cookies per host, not per port, and every
-> pytincture-based app — IguanaXterm included — names its sign-in cookie the
-> same. Both on `127.0.0.1`, signing in to one signs you out of the other.
+> because browsers keep cookies per host, not per port, and older
+> pytincture-based apps all named their sign-in cookie the same: both on
+> `127.0.0.1`, signing in to one signed you out of the other. Monguana now names
+> its cookies `monguana-*`, but keeps its own address so existing links work.
 > Linux and Windows answer on all of `127.0.0.0/8` with no setup. **macOS**
 > answers only on `127.0.0.1`: either run `sudo ifconfig lo0 alias 127.0.0.2`
 > (until the next restart), or set `MONGUANA_HOST=127.0.0.1` in `.env` and

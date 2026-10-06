@@ -185,7 +185,7 @@ installer build, silent install, the installed app serving its login page,
 background start, `.js` served as `text/javascript` against a real Windows
 registry, `--stop`, and silent uninstall keeping the data. Its first run found
 pytincture unable to read any contained file on Windows; `pytincture_compat.py`
-works around it (see CLAUDE.md).
+worked around it until pytincture#377 fixed it upstream (1.0.0rc13).
 
 **Checked by hand on Windows 11** (2026-09-29): the installer built by CI
 installs and works, including the tray icon, the first-run message box and
@@ -193,9 +193,8 @@ the Start-menu shortcuts.
 
 **Still open:**
 
-- The upstream pytincture fix (branch `fix/windows-contained-file-open`,
-  ready locally, parked: no push access to `pytincture/pytincture`). Once a
-  release has it, bump the pin and delete `pytincture_compat.py`.
+- ~~The upstream pytincture fix~~ merged as pytincture#377 (1.0.0rc13); the
+  pin is bumped and `pytincture_compat.py` deleted.
 
 A `setup.exe` that runs Monguana on Windows **without Docker and without
 HTTPS**, for people who only want it on their own machine.
@@ -420,8 +419,9 @@ without HTTPS**, the macOS counterpart of phase 38. Docker Desktop or Podman
 - **The bundle approach:** a bundled Python with the app as plain files, no
   PyInstaller, for the same reason as on Windows (pytincture serves appcode's
   source to the browser).
-- **`pytincture_compat`'s Windows patch is not needed:** macOS supports
-  `dir_fd` for `os.open`. The service-worker patch applies as everywhere.
+- **No pytincture workaround is needed:** macOS supports `dir_fd` for
+  `os.open`, and the service-worker and Windows fixes are upstream since
+  1.0.0rc12 / rc13.
 - **No HTTPS needed**, as on Windows: a literal loopback address.
 
 **Findings (2026-10-01):**
