@@ -450,6 +450,13 @@ results, `check()` for cooperative cancel); the page polls
   order instead of re-ordering a page of mixed BSON types by text.
   `_sync_table_sort` moves the caret to match a sort typed by hand, with a
   guard flag because `DataTable.sort()` emits `sort` itself.
+- **The header is a wapyt `Toolbar`** (wa_pytincture_widgetset#24), built by
+  `_toolbar_config()` from `_TOOLBAR_BUTTONS` and held as `self.toolbar`;
+  `on_click` routes ids to `_on_toolbar` (the `update` notice opens About).
+  The signed-in user is the `user` text item and the release notice the
+  hidden `update` button, both set through `set_text` / `set_hidden`, not DOM
+  lookups. Compact mode drops labels to icons when the window is narrow. A
+  small `_CSS` rule keeps it in the app's panel colour.
 - **Toasts and dialogs come from `wapyt.message`** (wa_pytincture_widgetset#22):
   `self._toast(text, kind=...)` delegates to `message.toast` with `info` /
   `success` / `warning` / `error`, and every confirm or prompt is

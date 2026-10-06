@@ -46,6 +46,11 @@ from wapyt import (
     TableAction,
     TabWidget,
     TabWidgetConfig,
+    ToolbarButton,
+    ToolbarConfig,
+    ToolbarSeparator,
+    ToolbarSpacer,
+    ToolbarText,
     Tree,
     TreeAction,
     TreeConfig,
@@ -339,7 +344,9 @@ class Monguana(MainWindow):
     # ------------------------------------------------------------------
 
     def _build_chrome(self) -> None:
-        self.attach_html("mainwindow_header", self._toolbar_html())
+        self.toolbar = self.add_toolbar("mainwindow_header", self._toolbar_config())
+        self.toolbar.on_click(lambda payload: self._on_toolbar(
+            "about" if payload["id"] == "update" else str(payload["id"])))
 
         body = self.add_layout(
             "mainwindow",
@@ -445,29 +452,22 @@ class Monguana(MainWindow):
         self._proxies.append(proxy)
         js.document.addEventListener(event, proxy)
 
-    def _toolbar_html(self) -> str:
-        parts = ['<div class="mg-toolbar">']
+    def _toolbar_config(self) -> ToolbarConfig:
+        items: list = []
         for key, label, icon in _TOOLBAR_BUTTONS:
             if key == "|":
-                parts.append('<span class="mg-toolbar-sep"></span>')
-                continue
-            parts.append(
-                f'<button type="button" class="mg-toolbar-btn" data-top="{key}" title="{label}">'
-                f'<span class="mdi {icon}"></span><span>{label}</span></button>'
-            )
-        parts.append('<span class="mg-toolbar-spacer"></span>')
-        # Shown by _check_release when a newer release is out; opens About.
-        parts.append(
-            '<button type="button" class="mg-update" data-top="about" id="mg-update" hidden>'
-            '<span class="mdi mdi-arrow-up-circle"></span><span id="mg-update-text"></span></button>'
-        )
-        parts.append('<span class="mg-toolbar-user" id="mg-user"></span>')
-        parts.append(
-            '<button type="button" class="mg-toolbar-btn" data-top="logout" title="Sign out">'
-            '<span class="mdi mdi-logout"></span><span>Logout</span></button>'
-        )
-        parts.append("</div>")
-        return "".join(parts)
+                items.append(ToolbarSeparator())
+            else:
+                items.append(ToolbarButton(key, label, icon))
+        items += [
+            ToolbarSpacer(),
+            # Shown by _check_release when a newer release is out; opens About.
+            ToolbarButton("update", icon="mdi-arrow-up-circle", variant="accent",
+                          hidden=True, keep_label=True),
+            ToolbarText("user"),
+            ToolbarButton("logout", "Logout", "mdi-logout", tooltip="Sign out"),
+        ]
+        return ToolbarConfig(items=items, label="Monguana")
 
     # ------------------------------------------------------------------
     # Delegated DOM events
@@ -476,10 +476,6 @@ class Monguana(MainWindow):
     def _on_click(self, event) -> None:
         target = event.target
         if not target or not hasattr(target, "closest"):
-            return
-        top = target.closest("[data-top]")
-        if top:
-            self._on_toolbar(str(top.dataset.top))
             return
         button = target.closest("[data-mg]")
         if not button or button.disabled:
@@ -641,10 +637,8 @@ class Monguana(MainWindow):
 
     async def _load_identity(self) -> None:
         self._me = await UserService().me_async()
-        label = _el("mg-user")
-        if label:
-            suffix = " · admin" if self._me.get("is_admin") else ""
-            label.textContent = f"{self._me.get('username', '')}{suffix}"
+        suffix = " · admin" if self._me.get("is_admin") else ""
+        self.toolbar.set_text("user", f"{self._me.get('username', '')}{suffix}")
         if self._me.get("must_change_password"):
             self._password_nag()
 
@@ -3889,11 +3883,10 @@ class Monguana(MainWindow):
         result = await AboutService().latest_async()
         self._release = dict(result) if result.get("ok") else {
             "checked": False, "reason": "unreachable", "error": result.get("error", "")}
-        badge = _el("mg-update")
-        if badge and self._release.get("newer"):
-            _el("mg-update-text").textContent = f"Update {self._release['latest']}"
-            badge.title = f"Monguana {self._release['latest']} is out — see About"
-            badge.hidden = False
+        if self._release.get("newer"):
+            self.toolbar.set_text("update", f"Update {self._release['latest']}")
+            self.toolbar.set_tooltip("update", f"Monguana {self._release['latest']} is out — see About")
+            self.toolbar.set_hidden("update", False)
         status = _el("mg-about-update")
         if status:
             status.innerHTML = self._release_html()
@@ -5025,15 +5018,10 @@ def _profile_advice(row: dict) -> str:
 _CSS = """
 :root{--mg-accent:#10b981;--mg-accent-strong:#047857;--mg-bg:#0f172a;--mg-panel:#111827;
   --mg-line:#1f2937;--mg-line-2:#334155;--mg-text:#e2e8f0;--mg-muted:#94a3b8;--mg-dim:#64748b;}
-.mg-toolbar{display:flex;align-items:center;gap:4px;padding:6px 10px;height:100%;
-  background:var(--mg-panel);border-bottom:1px solid var(--mg-line);font:13px system-ui,sans-serif;}
-.mg-toolbar-btn{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;color:#cbd5f5;
-  background:transparent;border:1px solid transparent;border-radius:6px;cursor:pointer;font:inherit;}
-.mg-toolbar-btn:hover{background:var(--mg-line);border-color:var(--mg-line-2);}
-.mg-toolbar-btn .mdi{font-size:16px;}
-.mg-toolbar-sep{width:1px;height:20px;margin:0 6px;background:var(--mg-line-2);}
-.mg-toolbar-spacer{flex:1 1 auto;}
-.mg-toolbar-user{color:var(--mg-dim);font-size:12px;padding-right:6px;}
+/* The header Toolbar, in the app's palette rather than wapyt's dark surface. */
+[data-wapyt-theme="dark"] .wapyt-toolbar{background:var(--mg-panel);color:#cbd5f5;
+  border-bottom-color:var(--mg-line);}
+[data-wapyt-theme="dark"] .wapyt-toolbar-sep{background:var(--mg-line-2);}
 
 .mg-sidebar{display:flex;flex-direction:column;height:100%;min-height:0;}
 .mg-brand{display:flex;align-items:center;gap:10px;padding:10px 12px;flex:0 0 auto;
@@ -5194,11 +5182,6 @@ textarea.mg-input{resize:vertical;min-height:31px;line-height:1.45;}
   font:12.5px ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;}
 .mg-nag{display:flex;flex-direction:column;gap:10px;padding:4px 2px;font:13px/1.55 system-ui,sans-serif;color:#cbd5f5;}
 .mg-nag p{margin:0;}
-.mg-update{display:inline-flex;align-items:center;gap:5px;margin-right:8px;padding:4px 10px;
-  border-radius:999px;border:1px solid rgba(16,185,129,.45);background:rgba(16,185,129,.12);
-  color:#6ee7b7;font:600 12px system-ui,sans-serif;cursor:pointer;}
-.mg-update[hidden]{display:none;}
-.mg-update:hover{background:rgba(16,185,129,.22);}
 .mg-about{display:flex;flex-direction:column;gap:14px;padding:4px 2px;font:13px/1.5 system-ui,sans-serif;color:#cbd5f5;}
 .mg-about-head{display:flex;align-items:center;gap:14px;}
 .mg-about-logo{width:56px;height:56px;border-radius:50%;}
