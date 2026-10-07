@@ -39,12 +39,11 @@ dev = [
 ]
 
 [tool.uv.sources]
-# 1.0.0rc13, pinned by commit until it is tagged: pytincture main at the merge
-# of #377 (Windows contained reads), with #376 (cookie namespace) and the
-# rc12 service-worker fix. Swap to tag = "v1.0.0rc13" once it is tagged; keep
-# requirements.txt in step. To work on pytincture itself:
+# The 1.0.0rc13 release tag: #377 (Windows contained reads), the cookie
+# namespace and the rc12 service-worker fix. Keep requirements.txt in step.
+# To work on pytincture itself:
 # uv add --editable ../pytincture
-pytincture = { git = "https://github.com/pytincture/pytincture.git", rev = "c02633323b08f2356a6768db83cd040f338caab7" }
+pytincture = { git = "https://github.com/pytincture/pytincture.git", tag = "v1.0.0rc13" }
 # NOT editable, deliberately: pytincture's widgetset discovery reads
 # __widgetset__ from the installed distribution, and an editable install
 # exposes only a .pth — the app then boots with `widgetlib: ""` and no
