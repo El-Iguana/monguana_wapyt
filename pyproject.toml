@@ -44,11 +44,12 @@ dev = [
 # To work on pytincture itself:
 # uv add --editable ../pytincture
 pytincture = { git = "https://github.com/pytincture/pytincture.git", tag = "v1.0.0rc13" }
-# NOT editable, deliberately: pytincture's widgetset discovery reads
-# __widgetset__ from the installed distribution, and an editable install
-# exposes only a .pth — the app then boots with `widgetlib: ""` and no
-# widgets, silently. Re-run `uv sync --reinstall-package wapyt` after changing
-# wapyt's Python wrappers; asset edits go through its scripts/dev_wheel.sh.
+# Not editable, so development installs what the image and the Windows bundle
+# ship: a built wheel. (Before pytincture 1.0.0rc13, #379, it had to be: an
+# editable install exposes only a .pth, and discovery then found no widgetset
+# and the app booted with no widgets, silently.) Re-run
+# `uv sync --reinstall-package wapyt` after changing wapyt's Python wrappers;
+# asset edits go through its scripts/dev_wheel.sh.
 wapyt = { path = "../wa_pytincture_widgetset", editable = false }
 
 [tool.setuptools]

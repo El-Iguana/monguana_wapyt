@@ -80,7 +80,7 @@ Podman, `compose.host-network.yaml` on Linux. `manage.py` is the admin CLI
 
 The `Containerfile` builds from a plain clone: a stage clones wapyt at the
 pinned `WAPYT_REF` and builds **both** wheels — 0.1.0 for the server's Python
-(non-editable, for widgetset discovery) and 99.99.99 with a regenerated asset
+(a built wheel, which widgetset discovery reads) and 99.99.99 with a regenerated asset
 manifest for the browser (what `dev_wheel.sh` does). Before this, a fresh
 clone could not be built: the browser wheel is git-ignored and the build
 needed a `vendor-wheels/` folder the dev script made. **Bump `WAPYT_REF`**
@@ -211,7 +211,9 @@ on any browser console error. Screenshots land in `tests/smoke/` (ignored).
   import VERSION`), never the module (`from services import about`): the
   browser package follows only the first form, and the second boots to a
   blank page with a truncated `import_module` traceback.
-- **wapyt installed non-editable** or the app boots with no widgets.
+- **wapyt installed editable** booted with no widgets before pytincture
+  1.0.0rc13 (#379). The pin is rc13 now, so either works; `pyproject.toml`
+  keeps it non-editable to match what ships.
 - **pytincture will not serve authenticated plain HTTP** except on a literal
   loopback IP: use `http://127.0.0.2:8766`, never `localhost`.
 - **Cookies are namespaced** (`COOKIE_NAMESPACE = "monguana"` in `service.py`,
