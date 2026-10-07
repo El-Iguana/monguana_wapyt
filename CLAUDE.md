@@ -15,8 +15,8 @@ re-explained.
 
 Siblings under `~/Development/Pytinc/`, each with its own `CLAUDE.md`:
 
-- `pytincture/` — the framework, pinned to commit `c026333` (1.0.0rc13, untagged at the
-  time; swap `pyproject.toml` and `requirements.txt` to tag `v1.0.0rc13` once it exists).
+- `pytincture/` — the framework, pinned to tag `v1.0.0rc13` in `pyproject.toml` *and*
+  `requirements.txt` (keep them in step).
 - `wa_pytincture_widgetset/` — **wapyt**. This app added `TreeAction(kinds=…)`
   (context-menu entries filtered by `node.data["kind"]`) so a server, a
   database and a collection get different menus.
