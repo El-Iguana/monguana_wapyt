@@ -16,7 +16,7 @@ dependencies = [
     "cryptography>=42.0.0",
     "uvicorn[standard]>=0.30.0",
     "argon2-cffi>=23.1.0",
-    "pytincture",
+    "pytincture==1.0.0",
     "wapyt",
     "tinymongo>=1.3.1",
 ]
@@ -39,12 +39,9 @@ dev = [
 ]
 
 [tool.uv.sources]
-# The 1.0.0rc15 release tag. Since rc12: the service-worker fix, #377
-# (Windows contained reads) and the cookie namespace. Keep requirements.txt
-# in step.
-# To work on pytincture itself:
-# uv add --editable ../pytincture
-pytincture = { git = "https://github.com/pytincture/pytincture.git", tag = "v1.0.0rc15" }
+# pytincture comes from PyPI (1.0.0, pinned in [project] dependencies; keep
+# requirements.txt in step). To work on pytincture itself, add here:
+# pytincture = { path = "../pytincture", editable = true }
 # Not editable, so development installs what the image and the Windows bundle
 # ship: a built wheel. (Before pytincture 1.0.0rc13, #379, it had to be: an
 # editable install exposes only a .pth, and discovery then found no widgetset

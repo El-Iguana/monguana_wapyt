@@ -15,8 +15,8 @@ re-explained.
 
 Siblings under `~/Development/Pytinc/`, each with its own `CLAUDE.md`:
 
-- `pytincture/` — the framework, pinned to tag `v1.0.0rc15` in `pyproject.toml` *and*
-  `requirements.txt` (keep them in step).
+- `pytincture/` — the framework, pinned to `pytincture==1.0.0` from PyPI in
+  `pyproject.toml` *and* `requirements.txt` (keep them in step).
 - `wa_pytincture_widgetset/` — **wapyt**. This app added `TreeAction(kinds=…)`
   (context-menu entries filtered by `node.data["kind"]`) so a server, a
   database and a collection get different menus.
@@ -212,7 +212,7 @@ on any browser console error. Screenshots land in `tests/smoke/` (ignored).
   browser package follows only the first form, and the second boots to a
   blank page with a truncated `import_module` traceback.
 - **wapyt installed editable** booted with no widgets before pytincture
-  1.0.0rc13 (#379). The pin is rc15 now, so either works; `pyproject.toml`
+  1.0.0rc13 (#379). The pin is 1.0.0 now, so either works; `pyproject.toml`
   keeps it non-editable to match what ships.
 - **pytincture will not serve authenticated plain HTTP** except on a literal
   loopback IP: use `http://127.0.0.2:8766`, never `localhost`.
